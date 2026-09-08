@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: subscription-slice-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: subslice
+      POSTGRES_PASSWORD: localdevpassword
+      POSTGRES_DB: subslice
+    ports:
+      - "5434:5432"
+    volumes:
+      - subslice-db-data:/var/lib/postgresql/data
+
+volumes:
+  subslice-db-data:

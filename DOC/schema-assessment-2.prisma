@@ -1,0 +1,202 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Carried over from Assessment 1. Reused, not rebuilt.
+// ---------------------------------------------------------------------------
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String
+  emailVerifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  sessions            Session[]
+  verificationCodes   VerificationCode[]
+  passwordResetTokens PasswordResetToken[]
+  paymentEvents       PaymentEvent[]
+  subscription        Subscription?
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationCode {
+  id         String    @id @default(cuid())
+  userId     String
+  code       String    @db.Char(6)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model PasswordResetToken {
+  id         String    @id @default(cuid())
+  tokenHash  String    @unique
+  userId     String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model RateLimitHit {
+  id        String   @id @default(cuid())
+  key       String
+  createdAt DateTime @default(now())
+
+  @@index([key, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Assessment 2
+// ---------------------------------------------------------------------------
+
+enum BillingInterval {
+  NONE
+  MONTH
+  YEAR
+}
+
+/// The three sellable plans. Seeded by migration, not created at runtime.
+/// amountMinor is an integer in the currency's smallest unit — kobo for NGN,
+/// cents for USD. Never a float, never a Decimal.
+model Plan {
+  code        String          @id // "free" | "monthly" | "yearly"
+  name        String
+  amountMinor Int
+  currency    String          @db.Char(3)
+  interval    BillingInterval
+  active      Boolean         @default(true)
+
+  @@index([active])
+}
+
+enum PaymentEventType {
+  CHECKOUT_INITIATED
+  PAYMENT_VERIFIED
+  ENTITLEMENT_GRANTED
+  PAYMENT_FAILED
+  WEBHOOK_RECEIVED
+  WEBHOOK_DUPLICATE_IGNORED
+  UPGRADE_PRORATED
+  DOWNGRADE_SCHEDULED
+  CANCELLATION_REQUESTED
+  SUBSCRIPTION_EXPIRED
+}
+
+/// APPEND ONLY. Rows are inserted, never updated, never deleted.
+/// This table is the source of truth for what a user is entitled to.
+/// Subscription is a projection derived from these rows and must be
+/// rebuildable from them alone.
+model PaymentEvent {
+  id     String           @id @default(cuid())
+  userId String
+  type   PaymentEventType
+
+  /// Which plan this event concerns, where relevant.
+  planCode String?
+
+  /// Flutterwave's reference for the transaction. The idempotency anchor.
+  providerReference String?
+
+  /// Integer minor units. Null for events that move no money, such as
+  /// CHECKOUT_INITIATED before an amount is fixed, or CANCELLATION_REQUESTED.
+  amountMinor Int?
+  currency    String? @db.Char(3)
+
+  /// Proration: unused value carried over from the previous plan, in minor
+  /// units. Set on UPGRADE_PRORATED so the arithmetic is reconstructable from
+  /// the log alone rather than only from application logs.
+  creditAppliedMinor Int?
+
+  /// The period this event establishes or ends, where relevant.
+  periodStart DateTime?
+  periodEnd   DateTime?
+
+  /// Failure reason, or the user's cancellation reason.
+  reason String?
+
+  /// The raw provider payload as received, for dispute evidence. Never
+  /// contains card data — the provider does not send it and must not be asked
+  /// for it.
+  payload Json?
+
+  /// The uniqueness anchor. Composed from the event type and the provider
+  /// reference (or another natural key for events with no provider reference).
+  /// The unique constraint — not an application-level check — is what makes a
+  /// repeated webhook record once.
+  idempotencyKey String @unique
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([providerReference])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLING
+  EXPIRED
+}
+
+/// A DERIVED PROJECTION of PaymentEvent, kept for cheap reads.
+/// Nothing here is authoritative. If this table and the event log disagree,
+/// the event log is right and this row is rebuilt.
+model Subscription {
+  id     String @id @default(cuid())
+  userId String @unique
+
+  planCode String
+  status   SubscriptionStatus
+
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+
+  /// Set true by a cancellation request. Access continues until
+  /// currentPeriodEnd — never an immediate cutoff.
+  cancelAtPeriodEnd  Boolean   @default(false)
+  cancelledAt        DateTime?
+  cancellationReason String?
+
+  /// A scheduled downgrade. Applied at currentPeriodEnd, not immediately.
+  pendingPlanCode String?
+
+  /// The last event this projection reflects. Makes it possible to prove the
+  /// projection is current, and to detect drift.
+  lastEventId String?
+
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([currentPeriodEnd])
+}

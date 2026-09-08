@@ -187,6 +187,14 @@ not against the documentation:
   `CANCELLATION_REASON_PROVIDED` carries it, and the projection reads the reason from that
   event. If the user skips the prompt, no second event is written and the reason stays null.
 
+- **A billing anchor is not the same as a period boundary.** `currentPeriodEnd`
+  can itself be a clamped date from a short month, so adding a cycle to it
+  compounds the clamp and permanently loses the original day-of-month. Any
+  code that extends a period — the pay-twice case in particular — must add
+  cycles from the subscription's original anchor day, derived from the first
+  `ENTITLEMENT_GRANTED` event in the log, not from whatever `currentPeriodEnd`
+  currently holds.
+  
 - **Paying twice for an active plan extends the period.** This is a different problem from a
   duplicate webhook: two genuine payments have two different provider references and both
   pass the idempotency constraint. The second `ENTITLEMENT_GRANTED` sets `periodStart` to the

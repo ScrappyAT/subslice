@@ -195,6 +195,13 @@ not against the documentation:
   `ENTITLEMENT_GRANTED` event in the log, not from whatever `currentPeriodEnd`
   currently holds.
   
+  - **Derivation replays recorded periods; it does not recompute them.** The
+  anchor-preserving extension math is a write-path responsibility. Any step
+  that writes an `ENTITLEMENT_GRANTED` must derive the anchor from the first
+  grant in the log and compute the new period with `addCalendarMonths`, and
+  must assert that in its own tests. Derivation will faithfully replay a wrong
+  period rather than catch it.
+  
 - **Paying twice for an active plan extends the period.** This is a different problem from a
   duplicate webhook: two genuine payments have two different provider references and both
   pass the idempotency constraint. The second `ENTITLEMENT_GRANTED` sets `periodStart` to the

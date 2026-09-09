@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { fromProviderAmount } from "./money";
+<<<<<<< HEAD
 import { addCalendarMonths, monthlyPeriodEnd, yearlyPeriodEnd } from "./period";
 import { appendPaymentEvent } from "./paymentLog";
 import { verifyTransaction } from "./flutterwave/verify";
@@ -29,6 +30,11 @@ function extendFromAnchor(anchor: Date, cycleMonths: number, currentPeriodEnd: D
   const cyclesSoFar = Math.round((currentEndMonthIndex - anchorMonthIndex) / cycleMonths);
   return addCalendarMonths(anchor, (cyclesSoFar + 1) * cycleMonths);
 }
+=======
+import { monthlyPeriodEnd, yearlyPeriodEnd } from "./period";
+import { appendPaymentEvent } from "./paymentLog";
+import { verifyTransaction } from "./flutterwave/verify";
+>>>>>>> a8647ba57225946f24fdd944cda75efe728740c0
 
 export type FulfilmentResult =
   | {
@@ -56,10 +62,16 @@ export type FulfilmentResult =
  * passed. Reaching the return view directly, with any value that doesn't
  * satisfy all five checks, falls through to "rejected" and grants nothing.
  *
+<<<<<<< HEAD
  * `now` is a parameter, not `new Date()` inside — it is both "the moment of
  * this grant" and the reference point for deriving whether an earlier
  * period is still active, and a test needs to control what that date is
  * instead of racing the real clock.
+=======
+ * `now` is a parameter, not `new Date()` inside — this is the first grant
+ * for a checkout, so its period anchor is the grant date, and a test needs
+ * to control what that date is instead of racing the real clock.
+>>>>>>> a8647ba57225946f24fdd944cda75efe728740c0
  */
 export async function fulfilCheckout(params: {
   userId: string;
@@ -256,6 +268,7 @@ export async function fulfilCheckout(params: {
     return { outcome: "duplicate" };
   }
 
+<<<<<<< HEAD
   // Before granting anything, derive what the user is currently entitled
   // to from the log itself — never assumed to be "nothing" just because
   // this is a checkout. Paying twice for an already-active period must
@@ -300,6 +313,14 @@ export async function fulfilCheckout(params: {
     periodStart = now;
     periodEnd = checkoutEvent.planCode === "yearly" ? yearlyPeriodEnd(now) : monthlyPeriodEnd(now);
   }
+=======
+  // This is the first grant for this checkout, so the anchor is the grant
+  // date itself — periodStart is `now`, not derived from anything earlier.
+  // The billing cycle length comes from the plan *code*, the same fixed
+  // knowledge checked above — not from a second Plan read.
+  const periodStart = now;
+  const periodEnd = checkoutEvent.planCode === "yearly" ? yearlyPeriodEnd(now) : monthlyPeriodEnd(now);
+>>>>>>> a8647ba57225946f24fdd944cda75efe728740c0
 
   // The exact line where entitlement is granted.
   const grantedEvent = await appendPaymentEvent({

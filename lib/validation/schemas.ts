@@ -64,9 +64,18 @@ export const resendCodeSchema = z.object({
   email,
 });
 
+export const checkoutSchema = z.object({
+  // This only checks shape. Whether the code names a real, chargeable plan
+  // is a database question, answered against the Plan table in the route —
+  // not something a schema encoding a hardcoded list of plan codes could
+  // answer without becoming a second source of truth for what plans exist.
+  planCode: z.string().min(1, "Plan code is required"),
+});
+
 export type SignupInput = z.infer<typeof signupSchema>;
 export type SigninInput = z.infer<typeof signinSchema>;
 export type ResetRequestInput = z.infer<typeof resetRequestSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 export type VerifyCodeInput = z.infer<typeof verifyCodeSchema>;
 export type ResendCodeInput = z.infer<typeof resendCodeSchema>;
+export type CheckoutInput = z.infer<typeof checkoutSchema>;

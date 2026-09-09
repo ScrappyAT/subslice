@@ -36,6 +36,15 @@ export const RATE_LIMITS = {
   // resends covers anyone actually waiting on a real code, and bounds
   // worst-case cost even if the cooldown were somehow bypassed.
   verifyResend: { limit: 3, windowSeconds: 60 * 60 },
+
+  // Every call here writes a CHECKOUT_INITIATED row and, if it gets that
+  // far, makes a real request to Flutterwave — unlike the anonymous auth
+  // endpoints above, this one always has a signed-in user, so it is keyed
+  // on the user rather than the IP (see the route). 10 per 10 minutes
+  // covers a genuine user abandoning checkout and retrying several times
+  // (including a run of real provider failures) while bounding how many
+  // provider calls and log rows one account can generate in a burst.
+  checkout: { limit: 10, windowSeconds: 10 * 60 },
 } as const;
 
 interface RateLimitResult {

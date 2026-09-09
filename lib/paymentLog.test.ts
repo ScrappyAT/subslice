@@ -33,6 +33,8 @@ describe("appendPaymentEvent", () => {
       idempotencyKey: `checkout:${randomUUID()}`,
       txRef: randomUUID(),
       planCode: "monthly",
+      amountMinor: 250000,
+      currency: "NGN",
     });
 
     expect(result.outcome).toBe("inserted");
@@ -49,6 +51,8 @@ describe("appendPaymentEvent", () => {
       idempotencyKey,
       txRef: randomUUID(),
       planCode: "monthly",
+      amountMinor: 250000,
+      currency: "NGN",
     };
 
     const first = await appendPaymentEvent(input);
@@ -73,6 +77,8 @@ describe("appendPaymentEvent", () => {
       idempotencyKey,
       txRef: randomUUID(),
       planCode: "monthly",
+      amountMinor: 250000,
+      currency: "NGN",
     };
 
     const [a, b] = await Promise.all([appendPaymentEvent(input), appendPaymentEvent(input)]);

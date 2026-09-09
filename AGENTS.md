@@ -133,6 +133,13 @@ not against the documentation:
   replayable and carries no tamper-evidence over the request body. Do not describe it as a
   signature in code comments or in the documentation.
 
+  - **Route protection is opt-in per route.** There is no middleware. Every
+  protected page calls `requireSession()` explicitly, as `app/dashboard/layout.tsx`
+  does. Any new page under the signed-in shell must do the same, or sit inside a
+  layout that does. The webhook route deliberately calls no session check — its
+  authenticity comes from `verif-hash` plus independent verification, not from a
+  cookie.
+
 - **Because of the above, nothing in the webhook body is ever treated as fact.** The handler
   checks the header, extracts the transaction id, and then calls the verify endpoint.
   Amount, currency and status are read only from that authenticated response. A forged or

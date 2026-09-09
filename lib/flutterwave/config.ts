@@ -19,3 +19,18 @@ export function getFlutterwaveSecretKey(): string {
   }
   return key;
 }
+
+/**
+ * The webhook shared secret (dashboard: Settings > Webhooks > Secret hash).
+ * Not the same value as FLW_SECRET_KEY above, and not a signing key — this
+ * is compared for equality against the `verif-hash` header on incoming
+ * webhooks, never sent anywhere. AGENTS.md: that equality check is not a
+ * signature, and nothing here should describe it as one.
+ */
+export function getFlutterwaveSecretHash(): string {
+  const hash = process.env.FLW_SECRET_HASH;
+  if (!hash) {
+    throw new Error("FLW_SECRET_HASH is not set");
+  }
+  return hash;
+}

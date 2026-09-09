@@ -4,10 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "./prisma";
 import { appendPaymentEvent } from "./paymentLog";
 import { deriveEntitlement } from "./entitlement";
-<<<<<<< HEAD
 import { addCalendarMonths, monthlyPeriodEnd } from "./period";
-=======
->>>>>>> a8647ba57225946f24fdd944cda75efe728740c0
 
 // The verify call is the one thing this suite never touches for real —
 // everything else (session's worth of user data, the checkout event, the
@@ -123,7 +120,6 @@ describe("fulfilCheckout", () => {
     expect(rows).toHaveLength(3);
   });
 
-<<<<<<< HEAD
   it("two grants for monthly -> one continuous period, not two overlapping ones", async () => {
     const anchor = new Date(Date.UTC(2026, 0, 1)); // 1 Jan
     const txRef1 = await initiateCheckout(user);
@@ -230,8 +226,6 @@ describe("fulfilCheckout", () => {
     expect(second.periodEnd).toEqual(monthlyPeriodEnd(lateNow));
   });
 
-=======
->>>>>>> a8647ba57225946f24fdd944cda75efe728740c0
   it("amount tampered in the verify response -> rejected, PAYMENT_FAILED written, no entitlement", async () => {
     // Recorded at checkout as 250000 (2500.00); tampered here against
     // *that* value, not Plan's current price — a distinction the next

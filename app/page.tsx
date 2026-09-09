@@ -4,5 +4,5 @@ import { redirect } from "next/navigation";
 // for an unauthenticated visitor to see at "/" — send them straight to
 // sign-in.
 export default function Home() {
-  redirect("/sign-in");
+  redirect("/signin")
 }

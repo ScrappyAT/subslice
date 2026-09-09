@@ -156,7 +156,10 @@ model PaymentEvent {
   providerReference String?
 
   /// Integer minor units. Null for events that move no money, such as
-  /// CHECKOUT_INITIATED before an amount is fixed, or CANCELLATION_REQUESTED.
+  /// CANCELLATION_REQUESTED. CHECKOUT_INITIATED carries this too — the
+  /// amount and currency quoted to the user at that moment, not looked up
+  /// again from Plan later, so a dispute months from now is answered from
+  /// this row rather than from whatever Plan.amountMinor says by then.
   amountMinor Int?
   currency    String? @db.Char(3)
 

@@ -79,6 +79,10 @@ export async function POST(request: Request) {
     idempotencyKey: `checkout:${txRef}`,
     txRef,
     planCode: plan.code,
+    // The amount quoted right now — verification (step 7) compares against
+    // this recorded value, never against Plan's price at verify time.
+    amountMinor: plan.amountMinor,
+    currency: plan.currency.trim(),
   });
   if (initiated.outcome === "duplicate") {
     // txRef is freshly generated with 128 bits of randomness. Reaching

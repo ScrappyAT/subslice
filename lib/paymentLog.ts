@@ -41,6 +41,12 @@ export interface CheckoutInitiatedInput extends CommonFields {
   /** Key is `checkout:{txRef}` — this is what ties the key to a real column. */
   txRef: string;
   planCode: string;
+  /** The amount and currency quoted to the user at this exact moment —
+   * not looked up again from Plan later. "Events carry their own facts"
+   * (AGENTS.md): a dispute three months from now is answered from this
+   * row, not from whatever Plan.amountMinor says by then. */
+  amountMinor: number;
+  currency: string;
 }
 
 export interface ProrationQuotedInput extends CommonFields {
@@ -156,7 +162,13 @@ function toCreateData(input: PaymentEventInput): Prisma.PaymentEventUncheckedCre
 
   switch (input.type) {
     case "CHECKOUT_INITIATED":
-      return { ...base, txRef: input.txRef, planCode: input.planCode };
+      return {
+        ...base,
+        txRef: input.txRef,
+        planCode: input.planCode,
+        amountMinor: input.amountMinor,
+        currency: input.currency,
+      };
     case "PRORATION_QUOTED":
       return {
         ...base,

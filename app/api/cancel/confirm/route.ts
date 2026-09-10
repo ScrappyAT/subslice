@@ -39,7 +39,7 @@ export async function POST() {
       );
     case "inconsistent":
       return NextResponse.json(
-        { error: "Could not cancel your subscription. Please try again.", planCode: result.planCode },
+        { error: "Could not cancel your subscription. Please try again." },
         { status: 500 },
       );
     default: {

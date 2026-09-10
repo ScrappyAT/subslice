@@ -23,15 +23,16 @@ export type ScheduleDowngradeResult =
    * Step 11's cancellation module has no reactivation path by design;
    * this is the one that would have reopened it by accident. */
   | { outcome: "already_cancelled" }
-  /** planCode is `null` only when derivation itself failed; the two later
-   * "inconsistent" returns in scheduleDowngrade have already derived a
-   * real planCode by that point and report it. */
-  | { outcome: "inconsistent"; planCode: string | null };
+  /** No planCode at all on this arm — not `null`. "Cannot determine" must
+   * not be renderable as a plan name, and a nullable field would still
+   * invite a fallback like `planCode ?? "free"` at the call site. See the
+   * matching note on lib/cancellation.ts's PreviewCancellationResult. */
+  | { outcome: "inconsistent" };
 
 export type CancelDowngradeResult =
   | { outcome: "cancelled"; planCode: string }
   | { outcome: "no_pending_downgrade" }
-  | { outcome: "inconsistent"; planCode: string | null };
+  | { outcome: "inconsistent" };
 
 /**
  * Cancelling a scheduled downgrade is its own event, DOWNGRADE_CANCELLED
@@ -129,7 +130,7 @@ export async function scheduleDowngrade(params: {
   const entitlement = deriveEntitlement(events, now);
 
   if (entitlement.status === "inconsistent") {
-    return { outcome: "inconsistent", planCode: null };
+    return { outcome: "inconsistent" };
   }
   if (entitlement.periodEnd === null || !entitlement.accessGranted) {
     return { outcome: "no_active_paid_plan" };
@@ -150,7 +151,7 @@ export async function scheduleDowngrade(params: {
   if (!currentPlan) {
     // FK-guaranteed to exist; defensive rather than asserted away. Known by
     // this point regardless: entitlement.planCode.
-    return { outcome: "inconsistent", planCode: entitlement.planCode };
+    return { outcome: "inconsistent" };
   }
   if (targetPlan.amountMinor >= currentPlan.amountMinor) {
     return { outcome: "would_be_upgrade" };
@@ -159,7 +160,7 @@ export async function scheduleDowngrade(params: {
   const currentGrant = findCurrentGrant(events);
   if (!currentGrant) {
     // entitlement.periodEnd !== null already guarantees a grant exists.
-    return { outcome: "inconsistent", planCode: entitlement.planCode };
+    return { outcome: "inconsistent" };
   }
   const priorActivity = findLatestDowngradeActivity(events, currentGrant.seq);
 
@@ -201,7 +202,7 @@ export async function cancelScheduledDowngrade(params: {
   const entitlement = deriveEntitlement(events, now);
 
   if (entitlement.status === "inconsistent") {
-    return { outcome: "inconsistent", planCode: null };
+    return { outcome: "inconsistent" };
   }
   if (entitlement.pendingPlanCode === null || entitlement.periodEnd === null) {
     return { outcome: "no_pending_downgrade" };
@@ -214,7 +215,7 @@ export async function cancelScheduledDowngrade(params: {
   if (!pendingSchedule) {
     // entitlement.pendingPlanCode !== null already guarantees this exists.
     // Known by this point regardless: entitlement.planCode.
-    return { outcome: "inconsistent", planCode: entitlement.planCode };
+    return { outcome: "inconsistent" };
   }
 
   await appendPaymentEvent({

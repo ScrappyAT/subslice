@@ -150,18 +150,41 @@ describe("appendPaymentEvent", () => {
     expect(rows).toHaveLength(0);
   });
 
-  it("rejects a reason on a fulfilment row (ENTITLEMENT_GRANTED), naming PaymentEvent_reason_scoped_to_type", async () => {
-    // EntitlementGrantedInput has no `reason` field, and toCreateData's
-    // ENTITLEMENT_GRANTED case (lib/paymentLog.ts) whitelists exactly the
-    // columns that type declares — so a `reason` smuggled in via a cast
-    // through appendPaymentEvent is silently dropped before it ever
-    // reaches Prisma, not rejected. That's correct application-layer
-    // behaviour, but it means this specific constraint can only be
-    // exercised by going under this file entirely, with the one raw
-    // `prisma.paymentEvent.create` this test file is exempted from the
-    // no-restricted-syntax rule for (eslint.config.mjs) — proving the
-    // database itself refuses this, independent of anything paymentLog.ts
-    // does or doesn't whitelist.
+  it("appendPaymentEvent itself throws on a reason smuggled onto the wrong event type, before any database round-trip", async () => {
+    // EntitlementGrantedInput has no `reason` field — this cast is the
+    // only way to construct the malformed input toCreateData's own guard
+    // (lib/paymentLog.ts) exists to catch. Before that guard existed, this
+    // exact input was silently dropped: toCreateData's ENTITLEMENT_GRANTED
+    // case builds an explicit field list that never reads `input.reason`,
+    // so the value vanished with no error. Nothing in this codebase relied
+    // on that drop (confirmed by grep across every real call site before
+    // making the change) — every legitimate `reason` write already goes
+    // through the PAYMENT_FAILED or CANCELLATION_REASON_PROVIDED branches.
+    const input = {
+      type: "ENTITLEMENT_GRANTED",
+      userId: user.id,
+      idempotencyKey: `granted:${randomUUID()}`,
+      providerReference: randomUUID(),
+      planCode: "monthly",
+      periodStart: new Date(Date.UTC(2026, 0, 1)),
+      periodEnd: new Date(Date.UTC(2026, 1, 1)),
+      amountMinor: 250000,
+      currency: "NGN",
+      reason: "should never be here",
+    } as unknown as EntitlementGrantedInput;
+
+    await expect(appendPaymentEvent(input)).rejects.toThrow(/"reason" is not a valid field on ENTITLEMENT_GRANTED/);
+
+    const rows = await prisma.paymentEvent.findMany({ where: { idempotencyKey: input.idempotencyKey } });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("rejects a reason on a fulfilment row at the database too, naming PaymentEvent_reason_scoped_to_type", async () => {
+    // A second, deeper proof: even a caller that bypasses paymentLog.ts
+    // entirely (the one raw `prisma.paymentEvent.create` this test file is
+    // exempted from the no-restricted-syntax rule for — eslint.config.mjs)
+    // is still refused, by the database itself, independent of the guard
+    // just added above.
     const idempotencyKey = `granted:${randomUUID()}`;
 
     await expect(

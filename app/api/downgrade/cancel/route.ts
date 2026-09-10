@@ -26,7 +26,7 @@ export async function POST() {
       return NextResponse.json({ error: "There is no scheduled downgrade to cancel." }, { status: 400 });
     case "inconsistent":
       return NextResponse.json(
-        { error: "Could not cancel the downgrade. Please try again.", planCode: result.planCode },
+        { error: "Could not cancel the downgrade. Please try again." },
         { status: 500 },
       );
     default: {

@@ -50,7 +50,7 @@ export async function POST(request: Request) {
       );
     case "inconsistent":
       return NextResponse.json(
-        { error: "Could not record your reason. Please try again.", planCode: result.planCode },
+        { error: "Could not record your reason. Please try again." },
         { status: 500 },
       );
     default: {

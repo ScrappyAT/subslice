@@ -2,7 +2,6 @@ import { prisma } from "./prisma";
 import { deriveEntitlement } from "./entitlement";
 import { prorate } from "./proration";
 import { getPlan } from "./plans";
-import type { PlanCode } from "./plans";
 import { appendPaymentEvent } from "./paymentLog";
 import { generateTxRef } from "./txRef";
 
@@ -21,11 +20,15 @@ export type QuoteUpgradeResult =
   /** "Upgrading from free goes through the normal subscribe path, not
    * proration — there is no unused value to credit." */
   | { outcome: "no_paid_plan" }
-  /** planCode is `null` only when derivation itself failed (nothing
-   * knowable at all); the two later "inconsistent" returns below have
-   * already derived a real planCode by that point and report it rather
-   * than discarding it. */
-  | { outcome: "inconsistent"; planCode: PlanCode | null };
+  /** No planCode at all, even on the two returns below that technically
+   * have one in hand at that point (entitlement.planCode) — "cannot
+   * determine" must never be renderable as a plan name, consistent with
+   * every other "inconsistent" arm in this codebase (see the matching
+   * note on lib/cancellation.ts's PreviewCancellationResult). Discarding a
+   * value that was briefly known is the correct trade here: a shape that
+   * sometimes carries a plan and sometimes doesn't is worse for a
+   * renderer than one that never does. */
+  | { outcome: "inconsistent" };
 
 /**
  * The quote step (step 9): derives the signed-in user's current entitlement
@@ -59,7 +62,7 @@ export async function quoteUpgrade(params: { userId: string; now: Date }): Promi
   const entitlement = deriveEntitlement(events, now);
 
   if (entitlement.status === "inconsistent") {
-    return { outcome: "inconsistent", planCode: null };
+    return { outcome: "inconsistent" };
   }
   if (entitlement.planCode === "yearly") {
     return { outcome: "already_yearly" };
@@ -78,7 +81,7 @@ export async function quoteUpgrade(params: { userId: string; now: Date }): Promi
   // what was actually charged historically.
   const currentGrant = events.filter((e) => e.type === "ENTITLEMENT_GRANTED").at(-1);
   if (!currentGrant || currentGrant.amountMinor === null) {
-    return { outcome: "inconsistent", planCode: entitlement.planCode };
+    return { outcome: "inconsistent" };
   }
 
   // Yearly's *current* price — reading Plan here is fine, unlike during
@@ -109,7 +112,7 @@ export async function quoteUpgrade(params: { userId: string; now: Date }): Promi
     // txRef is freshly generated with 128 bits of randomness — reaching
     // this means a genuine collision, not a normal condition.
     console.error("Freshly generated txRef collided with an existing idempotencyKey", { txRef });
-    return { outcome: "inconsistent", planCode: entitlement.planCode };
+    return { outcome: "inconsistent" };
   }
 
   return {

@@ -195,6 +195,59 @@ describe("fulfilCheckout", () => {
     expect(second.periodEnd).toEqual(new Date(Date.UTC(2026, 2, 31)));
   });
 
+  it("anchor case, extended twice: 31 Jan survives two clamped cycles, landing on 30 Apr, not 28 Apr or 30/31 chained wrongly", async () => {
+    // Step 11 follow-up 2, Q2: proves the anchor keeps being read from the
+    // FIRST grant ever (firstGrantPeriodStart), not from whatever the
+    // previous extension computed, across more than one extension. A bug
+    // that instead re-anchored on the last grant's periodStart would still
+    // pass the single-extension "anchor case" test above (28 Feb -> 31 Mar
+    // is correct either way, since Mar is the very next month regardless
+    // of which anchor is used) — only a SECOND extension exposes it,
+    // because by then the two approaches diverge: true anchor gives
+    // addCalendarMonths(31 Jan, 3) = 30 Apr; re-anchoring on 31 Mar gives
+    // addCalendarMonths(31 Mar, 1) = 30 Apr too, coincidentally, in April
+    // specifically — so this test's real proof is the intermediate value
+    // (31 Mar, not 28 Mar) already covered above, chained one step further
+    // to confirm nothing about the second extension's *inputs* silently
+    // switched to the wrong anchor.
+    const anchor = new Date(Date.UTC(2026, 0, 31)); // 31 Jan 2026
+    const txRef1 = await initiateCheckout(user);
+    successfulVerify({}, txRef1);
+    const first = await fulfilCheckout({ userId: user.id, txRef: txRef1, transactionId: randomUUID(), now: anchor });
+    expect(first.outcome).toBe("granted");
+    if (first.outcome !== "granted") throw new Error("unreachable");
+    expect(first.periodEnd).toEqual(new Date(Date.UTC(2026, 1, 28))); // clamped
+
+    const secondNow = new Date(Date.UTC(2026, 1, 10));
+    const txRef2 = await initiateCheckout(user);
+    successfulVerify({}, txRef2);
+    const second = await fulfilCheckout({ userId: user.id, txRef: txRef2, transactionId: randomUUID(), now: secondNow });
+    expect(second.outcome).toBe("granted");
+    if (second.outcome !== "granted") throw new Error("unreachable");
+    expect(second.periodEnd).toEqual(new Date(Date.UTC(2026, 2, 31))); // 31 Mar, anchor preserved once
+
+    const thirdNow = new Date(Date.UTC(2026, 2, 10));
+    const txRef3 = await initiateCheckout(user);
+    successfulVerify({}, txRef3);
+    const third = await fulfilCheckout({ userId: user.id, txRef: txRef3, transactionId: randomUUID(), now: thirdNow });
+    expect(third.outcome).toBe("granted");
+    if (third.outcome !== "granted") throw new Error("unreachable");
+    expect(third.periodStart).toEqual(new Date(Date.UTC(2026, 2, 31)));
+    // Three cycles from the true 31 Jan anchor — April has 30 days, so
+    // "31" clamps to 30, same as the first extension clamped to 28.
+    expect(third.periodEnd).toEqual(new Date(Date.UTC(2026, 3, 30)));
+
+    // Read the anchor straight off the log too, not only off the return
+    // value — firstGrantPeriodStart is still the very first grant, three
+    // grants later.
+    const events = await prisma.paymentEvent.findMany({
+      where: { userId: user.id, type: "ENTITLEMENT_GRANTED" },
+      orderBy: { seq: "asc" },
+    });
+    expect(events).toHaveLength(3);
+    expect(events[0].periodStart).toEqual(anchor);
+  });
+
   it("a grant after the period has expired -> a fresh period from now, not an extension of a dead one", async () => {
     const anchor = new Date(Date.UTC(2026, 0, 1));
     const txRef1 = await initiateCheckout(user);

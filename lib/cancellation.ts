@@ -12,12 +12,14 @@ export type PreviewCancellationResult =
    * every branch names the plan, never one where the caller has to treat
    * "no result" as "must be free". */
   | { outcome: "no_active_paid_plan"; planCode: PlanCode }
-  /** planCode is `null`, not omitted and not a guessed "free": derivation
-   * itself could not produce a plan here (the log did not add up), so
-   * there genuinely is nothing to name. A step-12 renderer that
-   * destructures `planCode` off every branch is forced to see this one
-   * explicitly rather than have it silently be `undefined`. */
-  | { outcome: "inconsistent"; planCode: null };
+  /** No planCode at all — not `null`, not omitted-but-typed-optional.
+   * Derivation could not produce a plan here (the log did not add up), so
+   * there is nothing to name, and a nullable field would still let a lazy
+   * renderer write `planCode ?? "free"` and show a wrong plan. Step 12
+   * renders this branch as "cannot determine" and must not display a plan
+   * name; the type itself is what enforces that, since `result.planCode`
+   * is a compile error on this arm, not a value to fall back from. */
+  | { outcome: "inconsistent" };
 
 /**
  * The confirmation step (step 11): computes what cancelling would mean —
@@ -36,7 +38,7 @@ export async function previewCancellation(params: {
   const entitlement = deriveEntitlement(events, params.now);
 
   if (entitlement.status === "inconsistent") {
-    return { outcome: "inconsistent", planCode: null };
+    return { outcome: "inconsistent" };
   }
   if (entitlement.periodEnd === null || !entitlement.accessGranted) {
     return { outcome: "no_active_paid_plan", planCode: entitlement.planCode };
@@ -49,7 +51,7 @@ export type RequestCancellationResult =
   | { outcome: "cancelled"; planCode: PlanCode; periodEnd: Date }
   | { outcome: "already_cancelled"; planCode: PlanCode; periodEnd: Date }
   | { outcome: "no_active_paid_plan"; planCode: PlanCode }
-  | { outcome: "inconsistent"; planCode: null };
+  | { outcome: "inconsistent" };
 
 /**
  * On confirmation: writes CANCELLATION_REQUESTED, keyed
@@ -92,7 +94,7 @@ export async function requestCancellation(params: {
   const entitlement = deriveEntitlement(events, params.now);
 
   if (entitlement.status === "inconsistent") {
-    return { outcome: "inconsistent", planCode: null };
+    return { outcome: "inconsistent" };
   }
   if (entitlement.periodEnd === null || !entitlement.accessGranted) {
     return { outcome: "no_active_paid_plan", planCode: entitlement.planCode };
@@ -100,12 +102,24 @@ export async function requestCancellation(params: {
   if (entitlement.cancelAtPeriodEnd) {
     return { outcome: "already_cancelled", planCode: entitlement.planCode, periodEnd: entitlement.periodEnd };
   }
+  if (entitlement.periodStart === null) {
+    // EntitlementState's own contract is that periodStart and periodEnd are
+    // null together or set together — periodEnd !== null already passed
+    // above, so this is unreachable in a consistent log. Defensive rather
+    // than asserted away, same convention as lib/downgrade.ts's
+    // FK-guaranteed-but-still-checked branches.
+    return { outcome: "inconsistent" };
+  }
 
   await appendPaymentEvent({
     type: "CANCELLATION_REQUESTED",
     userId: params.userId,
     idempotencyKey: `cancel:${params.userId}:${entitlement.periodEnd.toISOString()}`,
     planCode: entitlement.planCode,
+    // The access-until date on the row itself, not only inside the key —
+    // see the field's own doc in lib/paymentLog.ts.
+    periodStart: entitlement.periodStart,
+    periodEnd: entitlement.periodEnd,
   });
 
   // Subscription is a cache (AGENTS.md) — refreshed so cancelAtPeriodEnd
@@ -119,7 +133,7 @@ export async function requestCancellation(params: {
 export type ProvideCancellationReasonResult =
   | { outcome: "recorded" }
   | { outcome: "no_pending_cancellation" }
-  | { outcome: "inconsistent"; planCode: null };
+  | { outcome: "inconsistent" };
 
 /**
  * The reason prompt: shown after cancellation is already recorded, and
@@ -154,7 +168,7 @@ export async function provideCancellationReason(params: {
   const entitlement = deriveEntitlement(events, params.now);
 
   if (entitlement.status === "inconsistent") {
-    return { outcome: "inconsistent", planCode: null };
+    return { outcome: "inconsistent" };
   }
   if (!entitlement.cancelAtPeriodEnd || entitlement.periodEnd === null) {
     return { outcome: "no_pending_cancellation" };

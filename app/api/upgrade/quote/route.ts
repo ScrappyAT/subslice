@@ -41,7 +41,7 @@ export async function POST() {
       );
     case "inconsistent":
       return NextResponse.json(
-        { error: "Could not compute a quote. Please try again.", planCode: result.planCode },
+        { error: "Could not compute a quote. Please try again." },
         { status: 500 },
       );
     default: {

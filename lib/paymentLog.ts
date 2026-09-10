@@ -135,6 +135,15 @@ export interface DowngradeCancelledInput extends CommonFields {
 export interface CancellationRequestedInput extends CommonFields {
   type: "CANCELLATION_REQUESTED";
   planCode?: string;
+  /** The access-until date the user was promised, on the row itself — not
+   * only inside the idempotencyKey. A key is for collisions, not for
+   * facts (AGENTS.md: "events carry their own facts"); reading it back out
+   * of `cancel:{userId}:{periodEnd}` would mean parsing a string never
+   * meant to be parsed. Required together, like every other period pair
+   * on this table (PaymentEvent_period_pair) — a cancellation is only
+   * ever requested against a period that is already known. */
+  periodStart: Date;
+  periodEnd: Date;
 }
 
 export interface CancellationReasonProvidedInput extends CommonFields {
@@ -167,7 +176,34 @@ export type AppendResult =
 
 // --- Writer -----------------------------------------------------------------
 
+/** The two event types `reason` is ever valid on — the same set the
+ * database's own PaymentEvent_reason_scoped_to_type constraint enforces
+ * (prisma/migrations/20260910153000_reason_scoped_to_type). */
+const REASON_ALLOWED_ON = new Set<string>(["PAYMENT_FAILED", "CANCELLATION_REASON_PROVIDED"]);
+
 function toCreateData(input: PaymentEventInput): Prisma.PaymentEventUncheckedCreateInput {
+  // Every per-type interface except PaymentFailedInput and
+  // CancellationReasonProvidedInput omits `reason` entirely, so a normal,
+  // type-checked call literal can never carry one on the wrong type — this
+  // check exists for the caller that got past that anyway (a spread, an
+  // `as`, a future refactor that loosens the type). Before this check, a
+  // stray reason on any other type was silently dropped: the switch below
+  // builds an explicit field list per case and simply never reads
+  // `input.reason` for types that don't declare it, so the value vanished
+  // with no error and no trace. That is worse than the database's own
+  // rejection (PaymentEvent_reason_scoped_to_type) for the same bug: a
+  // constraint violation at least surfaces immediately as a thrown error;
+  // a silent drop looks like success. Throwing here catches it at the
+  // same layer the bug was introduced at, before a network round-trip to
+  // the database is even needed. Nothing in this codebase currently
+  // relies on the old drop — grep confirms every real call site only ever
+  // sets `reason` on PAYMENT_FAILED or CANCELLATION_REASON_PROVIDED.
+  if (!REASON_ALLOWED_ON.has(input.type) && (input as { reason?: unknown }).reason !== undefined) {
+    throw new Error(
+      `appendPaymentEvent: "reason" is not a valid field on ${input.type} — only PAYMENT_FAILED and CANCELLATION_REASON_PROVIDED carry one.`,
+    );
+  }
+
   const base = {
     userId: input.userId,
     type: input.type,
@@ -231,7 +267,12 @@ function toCreateData(input: PaymentEventInput): Prisma.PaymentEventUncheckedCre
     case "DOWNGRADE_CANCELLED":
       return { ...base, planCode: input.planCode };
     case "CANCELLATION_REQUESTED":
-      return { ...base, planCode: input.planCode };
+      return {
+        ...base,
+        planCode: input.planCode,
+        periodStart: input.periodStart,
+        periodEnd: input.periodEnd,
+      };
     case "CANCELLATION_REASON_PROVIDED":
       return { ...base, reason: input.reason };
     default: {

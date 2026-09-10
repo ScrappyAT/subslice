@@ -35,7 +35,7 @@ export async function GET() {
       );
     case "inconsistent":
       return NextResponse.json(
-        { error: "Could not load your plan. Please try again.", planCode: result.planCode },
+        { error: "Could not load your plan. Please try again." },
         { status: 500, headers: { "Cache-Control": "no-store" } },
       );
     default: {

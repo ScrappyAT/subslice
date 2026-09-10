@@ -102,8 +102,11 @@ not against the documentation:
   initiation and grants nothing.
 
 - **There is no `SUBSCRIPTION_EXPIRED` event.** Nothing schedules it and I do not want a
-  cron job. Expiry is derived from `now > currentPeriodEnd`, the same way a scheduled
-  downgrade is derived.
+  cron job. Expiry is derived from `now >= currentPeriodEnd`, the same way a scheduled
+  downgrade is derived. Periods are half-open — `[currentPeriodStart, currentPeriodEnd)` —
+  not closed: the pay-twice rule above chains the next period's start from the existing
+  end, so the boundary instant must belong to exactly one of the two periods, never both.
+  `now >= currentPeriodEnd` is what makes it the new period's, not the old one's.
 
 - **Derivation is a pure function of `(events, now)`.** `now` is injected as a parameter,
   never read from `new Date()` inside the logic. Without this I cannot test the day-12 of a
@@ -116,9 +119,9 @@ not against the documentation:
 
 - **`Subscription` columns are for display only.** No code path may read `Subscription.status`,
   `cancelAtPeriodEnd`, `planCode` or the period columns to make an entitlement decision.
-  Expiry is derived from `now > currentPeriodEnd`, so a stored `status` of `ACTIVE` on an
-  expired row is possible by design. Every access decision goes through the derivation
-  function, and that is the only place entitlement is decided.
+  Expiry is derived from `now >= currentPeriodEnd` (see above — half-open periods), so a
+  stored `status` of `ACTIVE` on an expired row is possible by design. Every access decision
+  goes through the derivation function, and that is the only place entitlement is decided.
 
 ### Verification and entitlement
 

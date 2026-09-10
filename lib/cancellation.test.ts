@@ -252,6 +252,11 @@ describe("requestCancellation", () => {
     const rows = await prisma.paymentEvent.findMany({ where: { userId: user.id, type: "CANCELLATION_REQUESTED" } });
     expect(rows).toHaveLength(1);
     expect(rows[0].idempotencyKey).toBe(`cancel:${user.id}:${end.toISOString()}`);
+    // The access-until date lives on the row itself now (Step 11 follow-up
+    // 2, Q4), not only inside the idempotencyKey string — a key is for
+    // collisions, not for facts (AGENTS.md).
+    expect(rows[0].periodStart).toEqual(start);
+    expect(rows[0].periodEnd).toEqual(end);
 
     const sub = await prisma.subscription.findUnique({ where: { userId: user.id } });
     expect(sub).toMatchObject({ cancelAtPeriodEnd: true, status: "CANCELLING" });
@@ -302,6 +307,21 @@ describe("requestCancellation", () => {
   });
 
   it("cancel anchored to P1, then a fulfilment event extends the period to P2: the anchor moves, cancelAtPeriodEnd clears, and a second cancellation writes cleanly under P2", async () => {
+    // Honesty note (Step 11 follow-up 2, Q2): the "fulfilment event" below
+    // is this file's own `subscribe` helper — a direct appendPaymentEvent
+    // call with periodStart/periodEnd handed in by the test — not a call
+    // through lib/fulfilCheckout.ts's real extension path. The anchor
+    // math (extendFromAnchor, its clamping behaviour) is NOT exercised
+    // here; monthlyPeriodEnd(end1) and the real anchor-preserving formula
+    // happen to agree in this specific case only because `start` (1 Jan)
+    // never clamps, so naive chaining and anchor-preserving math produce
+    // the same number by coincidence, not because this test proves the
+    // real path was used. What this test actually pins is the
+    // cancellation/derivation behaviour (cancelAtPeriodEnd clearing, the
+    // idempotency keys not colliding) given periods shaped like the real
+    // path's output — the anchor-preserving math itself is
+    // lib/fulfilCheckout.test.ts's job, proven there through the real
+    // path (its "anchor case" and the new double-extension case below).
     const start = new Date(Date.UTC(2026, 0, 1));
     const end1 = monthlyPeriodEnd(start); // P1
     await subscribe(user, "monthly", start, end1);
@@ -369,6 +389,51 @@ describe("requestCancellation", () => {
 });
 
 describe("provideCancellationReason", () => {
+  it("succeeds even after the period has fully lapsed, because cancelAtPeriodEnd survives the boundary — it is not cleared by time passing, only by a later grant or downgrade schedule", async () => {
+    // Step 11 follow-up 2, Q6. The premise under test: EntitlementState
+    // always carries cancelAtPeriodEnd (there is no narrower "post-boundary
+    // shape" that drops it — see lib/entitlement.ts's EntitlementState),
+    // and deriveEntitlement's boundary handling only ever touches
+    // pendingPlanCode, never cancelAtPeriodEnd. So a user who cancelled and
+    // then let the period run out — with no new grant or downgrade after
+    // it — still derives cancelAtPeriodEnd: true indefinitely, and this
+    // function's guard (`!entitlement.cancelAtPeriodEnd`) does not treat
+    // that as an orphan.
+    const start = new Date(Date.UTC(2026, 0, 1));
+    const end = monthlyPeriodEnd(start);
+    await subscribe(user, "monthly", start, end);
+
+    const cancelled = await requestCancellation({ userId: user.id, now: new Date(Date.UTC(2026, 0, 15)) });
+    expect(cancelled.outcome).toBe("cancelled");
+
+    // Well past `end` — the period has fully lapsed, access is long gone,
+    // and nothing else has happened since.
+    const now = new Date(Date.UTC(2026, 5, 1));
+    const preCheck = deriveEntitlement(
+      await prisma.paymentEvent.findMany({ where: { userId: user.id }, orderBy: { seq: "asc" } }),
+      now,
+    );
+    expect(preCheck).toMatchObject({ accessGranted: false, cancelAtPeriodEnd: true });
+
+    const result = await provideCancellationReason({ userId: user.id, reason: "too expensive", now });
+    expect(result).toEqual({ outcome: "recorded" });
+
+    const rows = await prisma.paymentEvent.findMany({
+      where: { userId: user.id, type: "CANCELLATION_REASON_PROVIDED" },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reason).toBe("too expensive");
+
+    // It renders something: the projection is refreshed and reflects both
+    // facts at once — expired access, and the reason for the cancellation
+    // that led there. Not a contradiction: status distinguishes "expired"
+    // from "still within its cancelling grace period" (EXPIRED takes
+    // priority over CANCELLING in subscriptionProjection.ts), while
+    // cancelAtPeriodEnd and cancellationReason remain visible underneath.
+    const sub = await prisma.subscription.findUnique({ where: { userId: user.id } });
+    expect(sub).toMatchObject({ status: "EXPIRED", cancelAtPeriodEnd: true, cancellationReason: "too expensive" });
+  });
+
   it("a cancellation with a reason produces exactly two rows", async () => {
     const start = new Date(Date.UTC(2026, 0, 1));
     const end = yearlyPeriodEnd(start);

@@ -298,6 +298,17 @@ export async function fulfilCheckout(params: {
     // is where the existing period ends — not "now" — so the two periods
     // are continuous rather than overlapping, and the second payment's
     // value is never silently absorbed.
+    //
+    // `currentEntitlement.accessGranted` is the gate that scopes this to
+    // Step 11 follow-up 2 Q1's rule (a): a payment reactivates a cancelled
+    // user only when "access has not yet lapsed" — accessGranted is
+    // exactly that condition, already required here for an entirely
+    // separate reason (not silently absorbing a second payment into a
+    // dead period). It was never a gap needing a separate check: a lapsed
+    // period already means accessGranted is false, which sends this below
+    // to the "fresh period from now" branch instead — see Q3 of that same
+    // follow-up, and lib/fulfilCheckout.test.ts's "a grant after the
+    // period has expired" case, which pins precisely this.
     periodStart = currentEntitlement.periodEnd;
     periodEnd = extendFromAnchor(firstGrantPeriodStart, cycleMonths, currentEntitlement.periodEnd);
   } else {

@@ -62,20 +62,34 @@ function inconsistent(reason: string, atSeq: number): InconsistentLog {
  * `seq` is arrival order at this database — assigned by Postgres at INSERT
  * time — not the order the underlying real-world events occurred at
  * Flutterwave. A known, accepted consequence, stated here rather than
- * left to be discovered: a webhook delivery that is retried (network
- * failure, Flutterwave's own retry schedule, this server briefly down) can
- * arrive, and therefore be written, after some other event — e.g. a
- * cancellation — that a human would say happened later in the real world.
- * It still gets a higher `seq` than that cancellation, and derivation
- * applies it *after* the cancellation, full stop. This is deliberate, not
- * a gap: `seq` is the only ordering this system can make an atomic,
- * race-free guarantee about (Postgres-assigned, immutable once committed);
- * a provider-supplied timestamp cannot be, since it is exactly the kind of
- * external, unverifiable input AGENTS.md already treats the rest of a
- * webhook body as (see app/api/webhooks/flutterwave/route.ts — only `id`
- * is ever read from it, as a pointer to re-verify, never as fact). Pinned
- * in lib/cancellation.test.ts's "a fulfilment event wins over an earlier
- * cancellation regardless of which has the later createdAt" case.
+ * left to be discovered, in its precise form (narrower than "a retried
+ * webhook", which conflates two different things):
+ *
+ * - A webhook retried for a transaction ALREADY granted collides on
+ *   ENTITLEMENT_GRANTED's own idempotency key (`granted:{providerTxId}`,
+ *   AGENTS.md) and writes nothing new — appendPaymentEvent reports
+ *   `{ outcome: "duplicate" }`. It cannot reactivate a cancelled user (or
+ *   do anything else), because no new event exists for derivation to
+ *   apply, regardless of what arrived after what.
+ * - A genuinely delayed delivery for a DISTINCT transaction — one that
+ *   has never been granted, arriving late (network failure, Flutterwave's
+ *   own retry schedule, this server briefly down) after some other event,
+ *   e.g. a cancellation, that a human would say happened later in the
+ *   real world — is not a duplicate at all. It gets a fresh, higher `seq`
+ *   than that cancellation, and derivation applies it *after* the
+ *   cancellation, full stop.
+ *
+ * Only the second case reaches derivation; the first never produces a row
+ * to reorder in the first place. This is deliberate, not a gap: `seq` is
+ * the only ordering this system can make an atomic, race-free guarantee
+ * about (Postgres-assigned, immutable once committed); a provider-supplied
+ * timestamp cannot be, since it is exactly the kind of external,
+ * unverifiable input AGENTS.md already treats the rest of a webhook body
+ * as (see app/api/webhooks/flutterwave/route.ts — only `id` is ever read
+ * from it, as a pointer to re-verify, never as fact). Pinned in
+ * lib/cancellation.test.ts's "a fulfilment event wins over an earlier
+ * cancellation regardless of which has the later createdAt" case (a
+ * distinct-transaction scenario, per the distinction above).
  */
 export function deriveEntitlement(events: PaymentEvent[], now: Date): Entitlement {
   const ordered = [...events].sort((a, b) => a.seq - b.seq);

@@ -72,6 +72,13 @@ export const checkoutSchema = z.object({
   planCode: z.string().min(1, "Plan code is required"),
 });
 
+export const downgradeSchema = z.object({
+  // Same reasoning as checkoutSchema: shape only. Whether it names a real,
+  // active, cheaper plan is answered against the Plan table in
+  // lib/downgrade.ts, not duplicated here as a second source of truth.
+  targetPlanCode: z.string().min(1, "Target plan code is required"),
+});
+
 export const confirmUpgradeSchema = z.object({
   // The tx_ref from an earlier quote, and nothing else — there is no
   // amount field here at all. zod strips unknown keys by default, so a
@@ -87,4 +94,5 @@ export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 export type VerifyCodeInput = z.infer<typeof verifyCodeSchema>;
 export type ResendCodeInput = z.infer<typeof resendCodeSchema>;
 export type CheckoutInput = z.infer<typeof checkoutSchema>;
+export type DowngradeInput = z.infer<typeof downgradeSchema>;
 export type ConfirmUpgradeInput = z.infer<typeof confirmUpgradeSchema>;

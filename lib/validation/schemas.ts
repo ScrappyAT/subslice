@@ -87,6 +87,14 @@ export const confirmUpgradeSchema = z.object({
   txRef: z.string().min(1, "txRef is required"),
 });
 
+export const cancellationReasonSchema = z.object({
+  // Free text from a user, and it ends up in a database column
+  // (PaymentEvent.reason, a plain TEXT column with no built-in limit) —
+  // this cap is the only one that exists. 500 characters is generous for
+  // "why are you leaving" feedback without inviting unbounded storage.
+  reason: z.string().trim().min(1, "Reason is required").max(500, "Reason must be at most 500 characters"),
+});
+
 export type SignupInput = z.infer<typeof signupSchema>;
 export type SigninInput = z.infer<typeof signinSchema>;
 export type ResetRequestInput = z.infer<typeof resetRequestSchema>;
@@ -96,3 +104,4 @@ export type ResendCodeInput = z.infer<typeof resendCodeSchema>;
 export type CheckoutInput = z.infer<typeof checkoutSchema>;
 export type DowngradeInput = z.infer<typeof downgradeSchema>;
 export type ConfirmUpgradeInput = z.infer<typeof confirmUpgradeSchema>;
+export type CancellationReasonInput = z.infer<typeof cancellationReasonSchema>;

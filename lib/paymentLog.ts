@@ -118,6 +118,15 @@ export interface DowngradeScheduledInput extends CommonFields {
   planCode: string;
 }
 
+export interface DowngradeCancelledInput extends CommonFields {
+  type: "DOWNGRADE_CANCELLED";
+  /** The plan that was pending, now cancelled. Descriptive, not required
+   * by derivation (which clears pendingPlanCode unconditionally on this
+   * event) — but keeps the row readable on its own, without decoding the
+   * idempotencyKey's embedded seq reference to find out what it undid. */
+  planCode?: string;
+}
+
 export interface CancellationRequestedInput extends CommonFields {
   type: "CANCELLATION_REQUESTED";
   planCode?: string;
@@ -141,6 +150,7 @@ export type PaymentEventInput =
   | WebhookReceivedInput
   | WebhookDuplicateIgnoredInput
   | DowngradeScheduledInput
+  | DowngradeCancelledInput
   | CancellationRequestedInput
   | CancellationReasonProvidedInput;
 
@@ -212,6 +222,8 @@ function toCreateData(input: PaymentEventInput): Prisma.PaymentEventUncheckedCre
     case "WEBHOOK_DUPLICATE_IGNORED":
       return { ...base, providerReference: input.providerReference, txRef: input.txRef };
     case "DOWNGRADE_SCHEDULED":
+      return { ...base, planCode: input.planCode };
+    case "DOWNGRADE_CANCELLED":
       return { ...base, planCode: input.planCode };
     case "CANCELLATION_REQUESTED":
       return { ...base, planCode: input.planCode };

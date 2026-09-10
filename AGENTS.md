@@ -167,9 +167,23 @@ not against the documentation:
   | `PAYMENT_FAILED` | `failed:{txRef}` | A retry after failure uses a new `txRef` |
   | `WEBHOOK_RECEIVED` | `webhook:{providerTxId}` | — collision here is the point |
   | `WEBHOOK_DUPLICATE_IGNORED` | `webhook-dup:{providerTxId}:{receivedAt ISO ms}` | The same webhook arriving a third time |
-  | `DOWNGRADE_SCHEDULED` | `downgrade:{userId}:{currentPeriodEnd ISO}` | Downgrading again in a later period |
+  | `DOWNGRADE_SCHEDULED` | `downgrade:{userId}:{currentPeriodEnd ISO}` for the first schedule in a period; `downgrade:{userId}:{currentPeriodEnd ISO}:{seq of the DOWNGRADE_CANCELLED it follows}` for a reschedule | Downgrading again in a later period; rescheduling after cancelling within the same period |
+  | `DOWNGRADE_CANCELLED` | `downgrade-cancel:{userId}:{currentPeriodEnd ISO}:{seq of the DOWNGRADE_SCHEDULED it cancels}` | Cancelling again after a later reschedule within the same period |
   | `CANCELLATION_REQUESTED` | `cancel:{userId}:{currentPeriodEnd ISO}` | Cancelling, resubscribing, cancelling again |
   | `CANCELLATION_REASON_PROVIDED` | `cancel-reason:{userId}:{currentPeriodEnd ISO}` | As above |
+
+  The downgrade rows are the one case in this table where the same event
+  type needs more than one write within a single period. A bare
+  `{userId}:{currentPeriodEnd}` key is invariant for the whole period, so a
+  second write for a *different* decision collides with the first and is
+  silently swallowed — the exact failure this table exists to prevent. A
+  count of prior events of that type is not a fix: computing it means
+  reading a count before inserting, a check-then-insert race — two
+  concurrent, genuinely different decisions can read the same count before
+  either commits and collide. Anchoring instead on the `seq` of the
+  specific prior event being superseded is race-safe, because `seq` is
+  assigned by Postgres at insert time and is immutable once committed:
+  reading it is reading an already-durable fact, not racing a tally.
 
 ### Lifecycle
 

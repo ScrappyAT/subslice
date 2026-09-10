@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "PaymentEventType" ADD VALUE 'DOWNGRADE_CANCELLED';

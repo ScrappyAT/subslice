@@ -76,6 +76,25 @@ describe("deriveEntitlement — downgrade scheduled (pure, no database)", () => 
       pendingPlanCode: null,
     });
   });
+
+  it("DOWNGRADE_CANCELLED with nothing pending is reported as inconsistent, not treated as a no-op", () => {
+    const grantOnly: PaymentEvent[] = [
+      makeEvent({
+        type: "ENTITLEMENT_GRANTED",
+        planCode: "yearly",
+        periodStart: yearlyStart,
+        periodEnd: yearlyEnd,
+        amountMinor: 2500000,
+        currency: "NGN",
+        providerReference: "ref_2",
+      }),
+      makeEvent({ type: "DOWNGRADE_CANCELLED", planCode: "monthly" }),
+    ];
+
+    const result = deriveEntitlement(grantOnly, new Date(Date.UTC(2026, 5, 1)));
+
+    expect(result.status).toBe("inconsistent");
+  });
 });
 
 // --- Guard and idempotency-key cases: real database, matching every other
@@ -152,50 +171,59 @@ describe("scheduleDowngrade", () => {
     expect(result.outcome).toBe("no_active_paid_plan");
   });
 
-  it("scheduling, cancelling, and re-scheduling within one period does not collide on the idempotency key", async () => {
+  it("schedule, cancel, reschedule, cancel again within one period does not collide on the idempotency key", async () => {
     const start = new Date(Date.UTC(2026, 0, 1));
     const end = yearlyPeriodEnd(start);
     await subscribe(user, "yearly", start, end);
-    // Three separate actions, so three separate moments — as they would
-    // be in reality (each a distinct HTTP request capturing its own
-    // `new Date()`), not three calls sharing one artificially identical
-    // instant. The follow-up key includes `now`, so two follow-ups at the
-    // exact same millisecond would collide; that is not a realistic
-    // scenario for three human decisions, or even three fast automated
-    // ones, in a way the schedule-then-charge tx_ref pattern elsewhere in
-    // this codebase has to guard against (there, a network retry really
-    // can resubmit the identical request).
+
+    // The same instant for all four actions, deliberately — the whole
+    // point of anchoring keys on an already-committed seq rather than a
+    // timestamp is that this no longer needs staggering to avoid
+    // colliding. If this test used four different `now` values and still
+    // passed, that would prove nothing about the seq-anchoring; using one
+    // shared instant is what actually exercises it.
     const now = new Date(Date.UTC(2026, 5, 1));
-    const aMomentLater = new Date(now.getTime() + 1000);
-    const laterStill = new Date(now.getTime() + 2000);
 
-    const first = await scheduleDowngrade({ userId: user.id, targetPlanCode: "monthly", now });
-    expect(first.outcome).toBe("scheduled");
+    const scheduled1 = await scheduleDowngrade({ userId: user.id, targetPlanCode: "monthly", now });
+    expect(scheduled1.outcome).toBe("scheduled");
 
-    const cancelled = await cancelScheduledDowngrade({ userId: user.id, now: aMomentLater });
-    expect(cancelled.outcome).toBe("cancelled");
+    const cancelled1 = await cancelScheduledDowngrade({ userId: user.id, now });
+    expect(cancelled1.outcome).toBe("cancelled");
 
-    const second = await scheduleDowngrade({ userId: user.id, targetPlanCode: "monthly", now: laterStill });
-    expect(second.outcome).toBe("scheduled");
+    const scheduled2 = await scheduleDowngrade({ userId: user.id, targetPlanCode: "monthly", now });
+    expect(scheduled2.outcome).toBe("scheduled");
+
+    const cancelled2 = await cancelScheduledDowngrade({ userId: user.id, now });
+    expect(cancelled2.outcome).toBe("cancelled");
 
     const rows = await prisma.paymentEvent.findMany({
-      where: { userId: user.id, type: "DOWNGRADE_SCHEDULED" },
+      where: { userId: user.id, type: { in: ["DOWNGRADE_SCHEDULED", "DOWNGRADE_CANCELLED"] } },
       orderBy: { seq: "asc" },
     });
-    // Three distinct actions, three rows — none silently swallowed as a
+    // Four distinct actions, four rows — none silently swallowed as a
     // duplicate of an earlier, different decision.
-    expect(rows).toHaveLength(3);
-    expect(new Set(rows.map((r) => r.idempotencyKey)).size).toBe(3);
-    // The first uses the bare per-period key exactly as AGENTS.md states
-    // it; the follow-ups (cancel, reschedule) each carry their own moment.
-    expect(rows[0].idempotencyKey).toBe(`downgrade:${user.id}:${end.toISOString()}`);
-    expect(rows[1].planCode).toBe("yearly"); // the cancel: back to the current plan
-    expect(rows[2].planCode).toBe("monthly"); // the reschedule: the real, final intent
+    expect(rows).toHaveLength(4);
+    expect(new Set(rows.map((r) => r.idempotencyKey)).size).toBe(4);
+    expect(rows.map((r) => r.type)).toEqual([
+      "DOWNGRADE_SCHEDULED",
+      "DOWNGRADE_CANCELLED",
+      "DOWNGRADE_SCHEDULED",
+      "DOWNGRADE_CANCELLED",
+    ]);
 
-    // The latest decision (seq order, not action order) is what wins.
+    // The very first schedule uses the bare per-period key exactly as
+    // AGENTS.md states it; everything after anchors on the seq of the
+    // event it follows, not on `now` (which is identical for all four).
+    expect(rows[0].idempotencyKey).toBe(`downgrade:${user.id}:${end.toISOString()}`);
+    expect(rows[1].idempotencyKey).toBe(`downgrade-cancel:${user.id}:${end.toISOString()}:${rows[0].seq}`);
+    expect(rows[2].idempotencyKey).toBe(`downgrade:${user.id}:${end.toISOString()}:${rows[1].seq}`);
+    expect(rows[3].idempotencyKey).toBe(`downgrade-cancel:${user.id}:${end.toISOString()}:${rows[2].seq}`);
+
+    // The final decision — cancelled again — correctly reflects nothing
+    // pending, not the reschedule two steps back.
     const events = await prisma.paymentEvent.findMany({ where: { userId: user.id }, orderBy: { seq: "asc" } });
-    const entitlement = deriveEntitlement(events, laterStill);
-    expect(entitlement).toMatchObject({ planCode: "yearly", pendingPlanCode: "monthly" });
+    const entitlement = deriveEntitlement(events, now);
+    expect(entitlement).toMatchObject({ planCode: "yearly", pendingPlanCode: null });
   });
 });
 

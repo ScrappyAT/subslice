@@ -131,6 +131,20 @@ export function deriveEntitlement(events: PaymentEvent[], now: Date): Entitlemen
         break;
       }
 
+      case "DOWNGRADE_CANCELLED": {
+        if (pendingPlanCode === null) {
+          // Cancelling only ever follows a schedule. Nothing pending
+          // means there is nothing this event could be undoing — not a
+          // no-op, a story the log cannot make sense of.
+          return inconsistent(
+            "DOWNGRADE_CANCELLED with no pending downgrade to cancel",
+            event.seq,
+          );
+        }
+        pendingPlanCode = null;
+        break;
+      }
+
       case "CANCELLATION_REQUESTED": {
         if (periodEnd === null) {
           return inconsistent(

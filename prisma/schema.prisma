@@ -116,6 +116,12 @@ model Plan {
 /// - The cancellation reason is its own event because it can arrive after
 ///   CANCELLATION_REQUESTED, and the log is append-only — the requested row
 ///   cannot be edited to add a reason later.
+/// - DOWNGRADE_CANCELLED is its own event, not a DOWNGRADE_SCHEDULED
+///   targeting the current plan: overloading one event type to carry two
+///   different facts (a real target plan, or "never mind") breaks the
+///   property that the log is readable as a record of what happened. Added
+///   in a follow-up migration to step 10, after DOWNGRADE_SCHEDULED already
+///   existed.
 enum PaymentEventType {
   CHECKOUT_INITIATED
   PRORATION_QUOTED
@@ -125,6 +131,7 @@ enum PaymentEventType {
   WEBHOOK_RECEIVED
   WEBHOOK_DUPLICATE_IGNORED
   DOWNGRADE_SCHEDULED
+  DOWNGRADE_CANCELLED
   CANCELLATION_REQUESTED
   CANCELLATION_REASON_PROVIDED
 }

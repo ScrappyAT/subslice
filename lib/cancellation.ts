@@ -12,7 +12,12 @@ export type PreviewCancellationResult =
    * every branch names the plan, never one where the caller has to treat
    * "no result" as "must be free". */
   | { outcome: "no_active_paid_plan"; planCode: PlanCode }
-  | { outcome: "inconsistent" };
+  /** planCode is `null`, not omitted and not a guessed "free": derivation
+   * itself could not produce a plan here (the log did not add up), so
+   * there genuinely is nothing to name. A step-12 renderer that
+   * destructures `planCode` off every branch is forced to see this one
+   * explicitly rather than have it silently be `undefined`. */
+  | { outcome: "inconsistent"; planCode: null };
 
 /**
  * The confirmation step (step 11): computes what cancelling would mean —
@@ -31,7 +36,7 @@ export async function previewCancellation(params: {
   const entitlement = deriveEntitlement(events, params.now);
 
   if (entitlement.status === "inconsistent") {
-    return { outcome: "inconsistent" };
+    return { outcome: "inconsistent", planCode: null };
   }
   if (entitlement.periodEnd === null || !entitlement.accessGranted) {
     return { outcome: "no_active_paid_plan", planCode: entitlement.planCode };
@@ -44,7 +49,7 @@ export type RequestCancellationResult =
   | { outcome: "cancelled"; planCode: PlanCode; periodEnd: Date }
   | { outcome: "already_cancelled"; planCode: PlanCode; periodEnd: Date }
   | { outcome: "no_active_paid_plan"; planCode: PlanCode }
-  | { outcome: "inconsistent" };
+  | { outcome: "inconsistent"; planCode: null };
 
 /**
  * On confirmation: writes CANCELLATION_REQUESTED, keyed
@@ -87,7 +92,7 @@ export async function requestCancellation(params: {
   const entitlement = deriveEntitlement(events, params.now);
 
   if (entitlement.status === "inconsistent") {
-    return { outcome: "inconsistent" };
+    return { outcome: "inconsistent", planCode: null };
   }
   if (entitlement.periodEnd === null || !entitlement.accessGranted) {
     return { outcome: "no_active_paid_plan", planCode: entitlement.planCode };
@@ -114,7 +119,7 @@ export async function requestCancellation(params: {
 export type ProvideCancellationReasonResult =
   | { outcome: "recorded" }
   | { outcome: "no_pending_cancellation" }
-  | { outcome: "inconsistent" };
+  | { outcome: "inconsistent"; planCode: null };
 
 /**
  * The reason prompt: shown after cancellation is already recorded, and
@@ -124,6 +129,18 @@ export type ProvideCancellationReasonResult =
  * The projection reads the reason from this event, not from
  * CANCELLATION_REQUESTED — that row is never updated, because the log is
  * append-only.
+ *
+ * The `!entitlement.cancelAtPeriodEnd` check below is the orphan-reason
+ * guard: it runs, and can reject, BEFORE appendPaymentEvent is ever
+ * called, so an orphan CANCELLATION_REASON_PROVIDED (one with no
+ * cancellation to attach to) never enters the log through this function —
+ * this is the only write path that produces this event type. Derivation's
+ * own "CANCELLATION_REASON_PROVIDED with no matching CANCELLATION_REQUESTED"
+ * inconsistency (lib/entitlement.ts) is a backstop for a log that
+ * acquired such a row some other way (a hand-written insert, a bug in a
+ * future write path) — not the check that fires in normal operation. In
+ * the only path that exists today, this guard always fires first, and the
+ * derivation-level check never has anything to catch.
  */
 export async function provideCancellationReason(params: {
   userId: string;
@@ -137,7 +154,7 @@ export async function provideCancellationReason(params: {
   const entitlement = deriveEntitlement(events, params.now);
 
   if (entitlement.status === "inconsistent") {
-    return { outcome: "inconsistent" };
+    return { outcome: "inconsistent", planCode: null };
   }
   if (!entitlement.cancelAtPeriodEnd || entitlement.periodEnd === null) {
     return { outcome: "no_pending_cancellation" };
@@ -156,24 +173,58 @@ export async function provideCancellationReason(params: {
 }
 
 /**
- * Reactivation ("un-cancel" before the period ends): not built in this
- * step. Nothing in AGENTS.md or the brief names it as a required
- * capability, unlike the downgrade schedule/cancel/reschedule cycle,
- * which AGENTS.md's own idempotency table already anticipated
- * ("cancelling, resubscribing, cancelling again"). Building it would need,
- * by direct analogy with DOWNGRADE_CANCELLED (this codebase's most recent
- * precedent for exactly this kind of change):
- * - a new PaymentEventType value (e.g. CANCELLATION_WITHDRAWN) — a
- *   one-line migration, the same shape as DOWNGRADE_CANCELLED's;
- * - a deriveEntitlement case clearing cancelAtPeriodEnd (and
- *   cancellationReason) on it, and treating one with no cancellation
- *   pending as inconsistent rather than a no-op — mirroring
- *   DOWNGRADE_CANCELLED's rule exactly;
- * - a seq-anchored idempotency key,
- *   `cancel-withdrawn:{userId}:{currentPeriodEnd}:{seq of the
- *   CANCELLATION_REQUESTED it withdraws}`, for the same race-safety reason
- *   DOWNGRADE_SCHEDULED's follow-up key needed one;
- * - an endpoint.
- * None of that exists here — a signed-in user who has cancelled currently
- * has no way to undo it before the period ends.
+ * Reactivation — two different things, one built, one not:
+ *
+ * 1. A FREE reactivation ("un-cancel", a click that reverses the flag with
+ *    no money changing hands): still not built. Nothing in AGENTS.md or
+ *    the brief names it as a required capability, unlike the downgrade
+ *    schedule/cancel/reschedule cycle, which AGENTS.md's own idempotency
+ *    table already anticipated ("cancelling, resubscribing, cancelling
+ *    again"). Building it would need, by direct analogy with
+ *    DOWNGRADE_CANCELLED (this codebase's most recent precedent for
+ *    exactly this kind of change): a new PaymentEventType (e.g.
+ *    CANCELLATION_WITHDRAWN), a deriveEntitlement case clearing
+ *    cancelAtPeriodEnd on it and treating one with nothing pending as
+ *    inconsistent, a seq-anchored idempotency key, and an endpoint. None
+ *    of that exists — a signed-in user who has cancelled has no *free* way
+ *    back before the period ends.
+ *
+ * 2. Reactivation via a genuine PAID ENTITLEMENT_GRANTED: already built,
+ *    deliberately, and this is the rule, stated explicitly rather than
+ *    left as an incidental reading of "clears a flag":
+ *
+ *    A real payment for continued access on the same plan, arriving while
+ *    cancelAtPeriodEnd is true and access has not yet lapsed, reactivates
+ *    — cancelAtPeriodEnd clears (lib/entitlement.ts's ENTITLEMENT_GRANTED
+ *    case, unconditional). This is not modelled as a distinct event type:
+ *    ENTITLEMENT_GRANTED already fully records the fact ("money was paid,
+ *    access continues") the same way it does for a plain extension: real
+ *    money, a real later periodEnd, both readable straight off the row.
+ *    A separate "SUBSCRIPTION_REACTIVATED" row would duplicate a fact
+ *    already implied by this ENTITLEMENT_GRANTED plus the
+ *    CANCELLATION_REQUESTED before it — the same reasoning schema.prisma
+ *    gives for not storing an expiry event.
+ *
+ *    "Extension of an active plan" and "reactivation of a cancelled one"
+ *    are distinguished by inspecting the state *immediately before* this
+ *    grant, not by anything on the grant itself: replay events[0..seq-1]
+ *    — if cancelAtPeriodEnd was already false, this is a plain extension;
+ *    if it was true, this is a reactivation. Both are visible and provable
+ *    from the log alone (lib/cancellation.test.ts's
+ *    "cancel anchored to P1... a fulfilment event extends the period"
+ *    case pins exactly this: cancelAtPeriodEnd true right before the
+ *    second grant, false immediately after it).
+ *
+ *    This is a decision, not a gap: a webhook cannot be guarded at a route
+ *    (Flutterwave calls it directly, with no confirmation step this app
+ *    controls), so the rule has to live in derivation, applying uniformly
+ *    to every trigger that can produce an ENTITLEMENT_GRANTED — the
+ *    checkout return view, the webhook, and an upgrade confirmation alike
+ *    (see lib/upgradeConfirm.ts's own note on this).
+ *
+ *    No refund is modelled for the alternative (cancellation standing
+ *    despite a new payment) because that alternative was rejected: it
+ *    would mean charging a customer for extended access and then denying
+ *    them that access anyway, which is a worse outcome than the one
+ *    chosen, not a safer one.
  */

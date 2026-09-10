@@ -3,6 +3,13 @@ import { getSession } from "@/lib/auth/session";
 import { checkRateLimit, RATE_LIMITS } from "@/lib/rate-limit";
 import { confirmUpgradeSchema } from "@/lib/validation/schemas";
 import { confirmUpgrade } from "@/lib/upgradeConfirm";
+import { methodNotAllowed } from "@/lib/methodNotAllowed";
+
+/** See lib/methodNotAllowed.ts — a browser GET gets a real 405, not a
+ * blank one. */
+export async function GET() {
+  return methodNotAllowed(["POST"]);
+}
 
 /**
  * Confirmation. Takes only the tx_ref from an earlier quote — no amount
@@ -75,5 +82,9 @@ export async function POST(request: Request) {
         { error: "We couldn't reach the payment provider. Please try again." },
         { status: 502 },
       );
+    default: {
+      const exhaustive: never = result;
+      throw new Error(`Unhandled ConfirmUpgradeResult outcome: ${JSON.stringify(exhaustive)}`);
+    }
   }
 }

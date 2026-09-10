@@ -2,6 +2,7 @@ import { prisma } from "./prisma";
 import { deriveEntitlement } from "./entitlement";
 import { prorate } from "./proration";
 import { getPlan } from "./plans";
+import type { PlanCode } from "./plans";
 import { appendPaymentEvent } from "./paymentLog";
 import { generateTxRef } from "./txRef";
 
@@ -20,7 +21,11 @@ export type QuoteUpgradeResult =
   /** "Upgrading from free goes through the normal subscribe path, not
    * proration — there is no unused value to credit." */
   | { outcome: "no_paid_plan" }
-  | { outcome: "inconsistent" };
+  /** planCode is `null` only when derivation itself failed (nothing
+   * knowable at all); the two later "inconsistent" returns below have
+   * already derived a real planCode by that point and report it rather
+   * than discarding it. */
+  | { outcome: "inconsistent"; planCode: PlanCode | null };
 
 /**
  * The quote step (step 9): derives the signed-in user's current entitlement
@@ -32,6 +37,17 @@ export type QuoteUpgradeResult =
  * `now` is a parameter for the same reason it is everywhere else in this
  * codebase: a test needs to control it, and this function must not decide
  * anything by reading the clock itself.
+ *
+ * Upgrading while cancelled: deliberately not guarded. This function does
+ * not read entitlement.cancelAtPeriodEnd at all — upgrading from monthly
+ * to yearly while cancelling is allowed, and confirmUpgrade's resulting
+ * ENTITLEMENT_GRANTED reactivates the same way any other genuine payment
+ * does (see the "Reactivation" note in lib/cancellation.ts). Guarding it
+ * here would be the same mistake DOWNGRADE_SCHEDULED's missing guard was
+ * (Step 11 follow-up, Q1) in reverse: that one needed a guard because a
+ * *free* action was silently un-cancelling a user; this one needs none,
+ * because a *paid* action un-cancelling a user is the chosen rule, not a
+ * bug — the fix for one is not a template for the other.
  */
 export async function quoteUpgrade(params: { userId: string; now: Date }): Promise<QuoteUpgradeResult> {
   const { userId, now } = params;
@@ -43,7 +59,7 @@ export async function quoteUpgrade(params: { userId: string; now: Date }): Promi
   const entitlement = deriveEntitlement(events, now);
 
   if (entitlement.status === "inconsistent") {
-    return { outcome: "inconsistent" };
+    return { outcome: "inconsistent", planCode: null };
   }
   if (entitlement.planCode === "yearly") {
     return { outcome: "already_yearly" };
@@ -62,7 +78,7 @@ export async function quoteUpgrade(params: { userId: string; now: Date }): Promi
   // what was actually charged historically.
   const currentGrant = events.filter((e) => e.type === "ENTITLEMENT_GRANTED").at(-1);
   if (!currentGrant || currentGrant.amountMinor === null) {
-    return { outcome: "inconsistent" };
+    return { outcome: "inconsistent", planCode: entitlement.planCode };
   }
 
   // Yearly's *current* price — reading Plan here is fine, unlike during
@@ -93,7 +109,7 @@ export async function quoteUpgrade(params: { userId: string; now: Date }): Promi
     // txRef is freshly generated with 128 bits of randomness — reaching
     // this means a genuine collision, not a normal condition.
     console.error("Freshly generated txRef collided with an existing idempotencyKey", { txRef });
-    return { outcome: "inconsistent" };
+    return { outcome: "inconsistent", planCode: entitlement.planCode };
   }
 
   return {

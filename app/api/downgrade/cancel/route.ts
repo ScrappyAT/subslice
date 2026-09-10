@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth/session";
 import { cancelScheduledDowngrade } from "@/lib/downgrade";
+import { methodNotAllowed } from "@/lib/methodNotAllowed";
+
+/** See lib/methodNotAllowed.ts — a browser GET gets a real 405, not a
+ * blank one. */
+export async function GET() {
+  return methodNotAllowed(["POST"]);
+}
 
 /** Cancels a pending downgrade before it takes effect — see the module
  * comment in lib/downgrade.ts for how this is represented in the log. */
@@ -18,6 +25,13 @@ export async function POST() {
     case "no_pending_downgrade":
       return NextResponse.json({ error: "There is no scheduled downgrade to cancel." }, { status: 400 });
     case "inconsistent":
-      return NextResponse.json({ error: "Could not cancel the downgrade. Please try again." }, { status: 500 });
+      return NextResponse.json(
+        { error: "Could not cancel the downgrade. Please try again.", planCode: result.planCode },
+        { status: 500 },
+      );
+    default: {
+      const exhaustive: never = result;
+      throw new Error(`Unhandled CancelDowngradeResult outcome: ${JSON.stringify(exhaustive)}`);
+    }
   }
 }

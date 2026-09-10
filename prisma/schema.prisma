@@ -185,6 +185,13 @@ model PaymentEvent {
   /// user for the latter — VarChar(500), not a bare TEXT column, so the
   /// length cap is a database constraint, not only the zod schema in
   /// front of it (lib/validation/schemas.ts's cancellationReasonSchema).
+  /// Scoped to exactly these two event types, required (and non-blank) on
+  /// CANCELLATION_REASON_PROVIDED, optional-but-non-blank on
+  /// PAYMENT_FAILED, and null on everything else — three CHECK constraints
+  /// added in migration 20260910153000_reason_scoped_to_type, not
+  /// representable in this schema file's own syntax (Prisma has no
+  /// per-enum-value column constraint), so they exist only in that raw
+  /// migration SQL.
   reason String? @db.VarChar(500)
 
   /// The raw provider payload as received, for dispute evidence. Never

@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth/session";
 import { requestCancellation } from "@/lib/cancellation";
+import { methodNotAllowed } from "@/lib/methodNotAllowed";
+
+/** A browser GET here — a direct visit, not this app's own fetch() call —
+ * gets a real 405 with an Allow header, not Next's blank default. See
+ * lib/methodNotAllowed.ts. */
+export async function GET() {
+  return methodNotAllowed(["POST"]);
+}
 
 /**
  * On explicit confirmation only — nothing before this point wrote
@@ -30,6 +38,13 @@ export async function POST() {
         { status: 400 },
       );
     case "inconsistent":
-      return NextResponse.json({ error: "Could not cancel your subscription. Please try again." }, { status: 500 });
+      return NextResponse.json(
+        { error: "Could not cancel your subscription. Please try again.", planCode: result.planCode },
+        { status: 500 },
+      );
+    default: {
+      const exhaustive: never = result;
+      throw new Error(`Unhandled RequestCancellationResult outcome: ${JSON.stringify(exhaustive)}`);
+    }
   }
 }

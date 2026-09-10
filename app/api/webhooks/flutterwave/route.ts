@@ -4,6 +4,14 @@ import { prisma } from "@/lib/prisma";
 import { appendPaymentEvent } from "@/lib/paymentLog";
 import { fulfilCheckout } from "@/lib/fulfilCheckout";
 import { getFlutterwaveSecretHash } from "@/lib/flutterwave/config";
+import { methodNotAllowed } from "@/lib/methodNotAllowed";
+
+/** A browser (or anything else) GETting the webhook URL gets a real 405,
+ * not a blank one — Flutterwave only ever POSTs here. See
+ * lib/methodNotAllowed.ts. */
+export async function GET() {
+  return methodNotAllowed(["POST"]);
+}
 
 // No requireSession()/getSession() here, and no middleware.ts exists in this
 // project (confirmed at step 6) — route protection is entirely opt-in per

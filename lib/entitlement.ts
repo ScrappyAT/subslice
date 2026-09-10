@@ -58,6 +58,24 @@ function inconsistent(reason: string, atSeq: number): InconsistentLog {
  * a createdAt millisecond and cuid is not chronologically sortable; `seq`
  * is the only column AGENTS.md designates as the replay order, and this is
  * the one place that ordering is load-bearing.
+ *
+ * `seq` is arrival order at this database — assigned by Postgres at INSERT
+ * time — not the order the underlying real-world events occurred at
+ * Flutterwave. A known, accepted consequence, stated here rather than
+ * left to be discovered: a webhook delivery that is retried (network
+ * failure, Flutterwave's own retry schedule, this server briefly down) can
+ * arrive, and therefore be written, after some other event — e.g. a
+ * cancellation — that a human would say happened later in the real world.
+ * It still gets a higher `seq` than that cancellation, and derivation
+ * applies it *after* the cancellation, full stop. This is deliberate, not
+ * a gap: `seq` is the only ordering this system can make an atomic,
+ * race-free guarantee about (Postgres-assigned, immutable once committed);
+ * a provider-supplied timestamp cannot be, since it is exactly the kind of
+ * external, unverifiable input AGENTS.md already treats the rest of a
+ * webhook body as (see app/api/webhooks/flutterwave/route.ts — only `id`
+ * is ever read from it, as a pointer to re-verify, never as fact). Pinned
+ * in lib/cancellation.test.ts's "a fulfilment event wins over an earlier
+ * cancellation regardless of which has the later createdAt" case.
  */
 export function deriveEntitlement(events: PaymentEvent[], now: Date): Entitlement {
   const ordered = [...events].sort((a, b) => a.seq - b.seq);

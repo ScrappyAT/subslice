@@ -341,6 +341,30 @@ describe("requestCancellation", () => {
     expect(rows[0].idempotencyKey).toBe(`cancel:${user.id}:${end1.toISOString()}`);
     expect(rows[1].idempotencyKey).toBe(`cancel:${user.id}:${end2.toISOString()}`);
     expect(rows[0].idempotencyKey).not.toBe(rows[1].idempotencyKey);
+
+    // Which of the two rows is "operative" is never looked up by reading a
+    // periodEnd off the row itself (CANCELLATION_REQUESTED carries no
+    // periodEnd column at all) — it falls out of seq order alone: the P2
+    // cache row's cancelledAt is the SECOND row's createdAt, not the
+    // first's, exactly because lib/subscriptionProjection.ts's
+    // `.filter(type === CANCELLATION_REQUESTED).at(-1)` picks the
+    // highest-seq one. Provably safe in general, not just here: cancelling
+    // is the only thing that ever sets cancelAtPeriodEnd true, and every
+    // event type capable of superseding it (ENTITLEMENT_GRANTED,
+    // DOWNGRADE_SCHEDULED) clears it unconditionally — so whenever replay
+    // ends with cancelAtPeriodEnd true, no event with a higher seq than the
+    // last CANCELLATION_REQUESTED can have left it untouched.
+    const sub = await prisma.subscription.findUnique({ where: { userId: user.id } });
+    expect(sub?.cancelledAt?.getTime()).toBe(rows[1].createdAt.getTime());
+    expect(sub?.cancelledAt?.getTime()).not.toBe(rows[0].createdAt.getTime());
+
+    // The P1 row's continued presence is a feature for a dispute three
+    // months out, not a liability: it has no money fields (amountMinor is
+    // null on every CANCELLATION_REQUESTED), so it answers nothing about
+    // "what was charged" — but it truthfully shows the customer asked to
+    // leave once, before a real payment (readable on the ENTITLEMENT_GRANTED
+    // between the two rows) changed their mind. Nothing about this state
+    // needs cleanup, hiding, or a "superseded" flag.
   });
 });
 
@@ -400,7 +424,7 @@ describe("provideCancellationReason", () => {
     });
   });
 
-  it("rejects a reason with no pending cancellation", async () => {
+  it("rejects an orphan reason with no pending cancellation before the insert — the write-path guard, not the derivation-level backstop, is what fires here", async () => {
     const start = new Date(Date.UTC(2026, 0, 1));
     await subscribe(user, "yearly", start, yearlyPeriodEnd(start));
 
@@ -410,7 +434,17 @@ describe("provideCancellationReason", () => {
       now: new Date(Date.UTC(2026, 5, 1)),
     });
 
-    expect(result.outcome).toBe("no_pending_cancellation");
+    expect(result).toEqual({ outcome: "no_pending_cancellation" });
+
+    // The guard in provideCancellationReason (lib/cancellation.ts) runs
+    // before appendPaymentEvent is ever called — this is what "never
+    // enters the log" actually means, not merely "is reported as an
+    // error". Confirmed here rather than assumed: zero
+    // CANCELLATION_REASON_PROVIDED rows for this user, full stop.
+    const rows = await prisma.paymentEvent.findMany({
+      where: { userId: user.id, type: "CANCELLATION_REASON_PROVIDED" },
+    });
+    expect(rows).toHaveLength(0);
   });
 });
 

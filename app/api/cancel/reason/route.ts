@@ -2,6 +2,13 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth/session";
 import { cancellationReasonSchema } from "@/lib/validation/schemas";
 import { provideCancellationReason } from "@/lib/cancellation";
+import { methodNotAllowed } from "@/lib/methodNotAllowed";
+
+/** See lib/methodNotAllowed.ts — a browser GET gets a real 405, not a
+ * blank one. */
+export async function GET() {
+  return methodNotAllowed(["POST"]);
+}
 
 /**
  * The optional reason prompt, shown after cancellation is already
@@ -42,6 +49,13 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     case "inconsistent":
-      return NextResponse.json({ error: "Could not record your reason. Please try again." }, { status: 500 });
+      return NextResponse.json(
+        { error: "Could not record your reason. Please try again.", planCode: result.planCode },
+        { status: 500 },
+      );
+    default: {
+      const exhaustive: never = result;
+      throw new Error(`Unhandled ProvideCancellationReasonResult outcome: ${JSON.stringify(exhaustive)}`);
+    }
   }
 }

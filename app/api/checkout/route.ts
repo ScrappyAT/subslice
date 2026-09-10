@@ -5,6 +5,13 @@ import { checkRateLimit, RATE_LIMITS } from "@/lib/rate-limit";
 import { checkoutSchema } from "@/lib/validation/schemas";
 import { generateTxRef } from "@/lib/txRef";
 import { initiateCheckoutCharge } from "@/lib/checkoutInitiation";
+import { methodNotAllowed } from "@/lib/methodNotAllowed";
+
+/** See lib/methodNotAllowed.ts — a browser GET gets a real 405, not a
+ * blank one. */
+export async function GET() {
+  return methodNotAllowed(["POST"]);
+}
 
 export async function POST(request: Request) {
   // getSession(), not requireSession(): this is a JSON API route, not a

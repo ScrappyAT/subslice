@@ -35,8 +35,16 @@ export async function GET() {
       );
     case "inconsistent":
       return NextResponse.json(
-        { error: "Could not load your plan. Please try again." },
+        { error: "Could not load your plan. Please try again.", planCode: result.planCode },
         { status: 500, headers: { "Cache-Control": "no-store" } },
       );
+    default: {
+      // Exhaustiveness check: if PreviewCancellationResult ever gains a new
+      // outcome, this fails to compile instead of silently falling through
+      // and returning undefined — the exact bug Q9 of the step 11 follow-up
+      // found in /api/downgrade.
+      const exhaustive: never = result;
+      throw new Error(`Unhandled PreviewCancellationResult outcome: ${JSON.stringify(exhaustive)}`);
+    }
   }
 }

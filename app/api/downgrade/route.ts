@@ -2,6 +2,13 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth/session";
 import { downgradeSchema } from "@/lib/validation/schemas";
 import { scheduleDowngrade } from "@/lib/downgrade";
+import { methodNotAllowed } from "@/lib/methodNotAllowed";
+
+/** See lib/methodNotAllowed.ts — a browser GET gets a real 405, not a
+ * blank one. */
+export async function GET() {
+  return methodNotAllowed(["POST"]);
+}
 
 /**
  * Schedules a downgrade, effective at the current period's end. No
@@ -67,6 +74,13 @@ export async function POST(request: Request) {
     case "invalid_target":
       return NextResponse.json({ error: "Unknown or unavailable plan code." }, { status: 400 });
     case "inconsistent":
-      return NextResponse.json({ error: "Could not schedule the downgrade. Please try again." }, { status: 500 });
+      return NextResponse.json(
+        { error: "Could not schedule the downgrade. Please try again.", planCode: result.planCode },
+        { status: 500 },
+      );
+    default: {
+      const exhaustive: never = result;
+      throw new Error(`Unhandled ScheduleDowngradeResult outcome: ${JSON.stringify(exhaustive)}`);
+    }
   }
 }

@@ -25,6 +25,17 @@ export type ConfirmUpgradeResult =
  * passed since the quote was shown. Only initiates the charge — through
  * lib/checkoutInitiation.ts, the same path a plain subscribe uses — if the
  * recomputed amount still matches the quote.
+ *
+ * This does not check entitlement.cancelAtPeriodEnd, deliberately: this
+ * function only *initiates* a Flutterwave charge (see
+ * lib/checkoutInitiation.ts) — it writes CHECKOUT_INITIATED, never
+ * ENTITLEMENT_GRANTED. The actual grant, and the reactivation question Q1
+ * of the step 11 follow-up asked about, happens later in
+ * lib/fulfilCheckout.ts, once payment is verified — see the "Reactivation"
+ * note in lib/cancellation.ts and lib/upgradeQuote.ts's matching note.
+ * Nothing here needs to guard against cancellation for that reason: an
+ * upgrade that never completes payment changes nothing, same as any other
+ * checkout attempt.
  */
 export async function confirmUpgrade(params: {
   userId: string;

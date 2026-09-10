@@ -8,16 +8,21 @@ import { prisma } from "./prisma";
  * comment. There is no update or delete path here, or anywhere: the log is
  * append-only, so there is nothing else to write.
  *
- * The nine check constraints on PaymentEvent (see the migration) are the
- * last line of defence. This file's job is to make the same rules fail to
+ * The check constraints on PaymentEvent (see the migrations) are the last
+ * line of defence. This file's job is to make the same rules fail to
  * compile wherever possible, so a malformed event is caught before it ever
- * reaches the database. The one constraint modelled precisely here is
+ * reaches the database. Two are modelled precisely here:
  * `PaymentEvent_grant_complete` — the type below requires exactly the
  * columns that constraint requires, no more and no less, for
- * `ENTITLEMENT_GRANTED`. The other constraints are amount/currency/period
- * *validity* rules (non-negative, ISO-shaped, correctly ordered) rather
- * than *presence* rules a discriminated union can express, so those stay
- * the database's job alone.
+ * `ENTITLEMENT_GRANTED` — and `PaymentEvent_reason_scoped_to_type` /
+ * `PaymentEvent_cancellation_reason_required` together, which is why
+ * `reason` is a required field on exactly `PaymentFailedInput` and
+ * `CancellationReasonProvidedInput` below and absent from every other
+ * type's interface — TypeScript rejects a `reason` on any of them before
+ * the database ever gets a chance to. The other constraints are
+ * amount/currency/period *validity* rules (non-negative, ISO-shaped,
+ * correctly ordered, non-blank) rather than *presence* rules a
+ * discriminated union can express, so those stay the database's job alone.
  */
 
 interface CommonFields {

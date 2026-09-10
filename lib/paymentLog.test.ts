@@ -115,4 +115,73 @@ describe("appendPaymentEvent", () => {
     });
     expect(rows).toHaveLength(0);
   });
+
+  // Step 11 follow-up 2, Q5: reason is scoped to its event type, and barred
+  // from being empty or whitespace-only, at the database itself — not only
+  // by cancellationReasonSchema (lib/validation/schemas.ts), which these
+  // tests deliberately bypass the same way the grant_complete test above
+  // does, to prove the database catches it independently.
+
+  it("rejects an empty-string reason on CANCELLATION_REASON_PROVIDED, naming PaymentEvent_reason_not_blank", async () => {
+    const input = {
+      type: "CANCELLATION_REASON_PROVIDED",
+      userId: user.id,
+      idempotencyKey: `cancel-reason:${randomUUID()}`,
+      reason: "",
+    } as unknown as import("./paymentLog").CancellationReasonProvidedInput;
+
+    await expect(appendPaymentEvent(input)).rejects.toThrow(/PaymentEvent_reason_not_blank/);
+
+    const rows = await prisma.paymentEvent.findMany({ where: { idempotencyKey: input.idempotencyKey } });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("rejects a whitespace-only reason on CANCELLATION_REASON_PROVIDED, naming PaymentEvent_reason_not_blank", async () => {
+    const input = {
+      type: "CANCELLATION_REASON_PROVIDED",
+      userId: user.id,
+      idempotencyKey: `cancel-reason:${randomUUID()}`,
+      reason: "   ",
+    } as unknown as import("./paymentLog").CancellationReasonProvidedInput;
+
+    await expect(appendPaymentEvent(input)).rejects.toThrow(/PaymentEvent_reason_not_blank/);
+
+    const rows = await prisma.paymentEvent.findMany({ where: { idempotencyKey: input.idempotencyKey } });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("rejects a reason on a fulfilment row (ENTITLEMENT_GRANTED), naming PaymentEvent_reason_scoped_to_type", async () => {
+    // EntitlementGrantedInput has no `reason` field, and toCreateData's
+    // ENTITLEMENT_GRANTED case (lib/paymentLog.ts) whitelists exactly the
+    // columns that type declares — so a `reason` smuggled in via a cast
+    // through appendPaymentEvent is silently dropped before it ever
+    // reaches Prisma, not rejected. That's correct application-layer
+    // behaviour, but it means this specific constraint can only be
+    // exercised by going under this file entirely, with the one raw
+    // `prisma.paymentEvent.create` this test file is exempted from the
+    // no-restricted-syntax rule for (eslint.config.mjs) — proving the
+    // database itself refuses this, independent of anything paymentLog.ts
+    // does or doesn't whitelist.
+    const idempotencyKey = `granted:${randomUUID()}`;
+
+    await expect(
+      prisma.paymentEvent.create({
+        data: {
+          type: "ENTITLEMENT_GRANTED",
+          userId: user.id,
+          idempotencyKey,
+          providerReference: randomUUID(),
+          planCode: "monthly",
+          periodStart: new Date(Date.UTC(2026, 0, 1)),
+          periodEnd: new Date(Date.UTC(2026, 1, 1)),
+          amountMinor: 250000,
+          currency: "NGN",
+          reason: "should never be here",
+        },
+      }),
+    ).rejects.toThrow(/PaymentEvent_reason_scoped_to_type/);
+
+    const rows = await prisma.paymentEvent.findMany({ where: { idempotencyKey } });
+    expect(rows).toHaveLength(0);
+  });
 });

@@ -20,9 +20,15 @@ export async function POST() {
     case "cancelled":
       return NextResponse.json({ planCode: result.planCode, periodEnd: result.periodEnd });
     case "already_cancelled":
-      return NextResponse.json({ error: "Your subscription is already set to cancel." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Your subscription is already set to cancel.", planCode: result.planCode, periodEnd: result.periodEnd },
+        { status: 400 },
+      );
     case "no_active_paid_plan":
-      return NextResponse.json({ error: "There is no active paid plan to cancel." }, { status: 400 });
+      return NextResponse.json(
+        { error: "There is no active paid plan to cancel.", planCode: result.planCode },
+        { status: 400 },
+      );
     case "inconsistent":
       return NextResponse.json({ error: "Could not cancel your subscription. Please try again." }, { status: 500 });
   }

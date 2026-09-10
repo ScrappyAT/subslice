@@ -13,9 +13,16 @@ export type ScheduleDowngradeResult =
   | { outcome: "no_active_paid_plan" }
   | { outcome: "invalid_target" }
   /** The free plan is never a downgrade target — leaving a paid plan
-   * entirely is cancellation's job (a separate, later step), not a
-   * "downgrade" to nothing. */
+   * entirely is cancellation's job, not a "downgrade" to nothing. */
   | { outcome: "target_is_free" }
+  /** A cancelled subscription cannot schedule a downgrade. Without this
+   * guard, DOWNGRADE_SCHEDULED's unconditional
+   * `cancelAtPeriodEnd = false` (lib/entitlement.ts) would silently
+   * un-cancel the user — a downgrade is a decision to stay as a customer
+   * on a cheaper plan, which contradicts having just decided to leave.
+   * Step 11's cancellation module has no reactivation path by design;
+   * this is the one that would have reopened it by accident. */
+  | { outcome: "already_cancelled" }
   | { outcome: "inconsistent" };
 
 export type CancelDowngradeResult =
@@ -123,6 +130,9 @@ export async function scheduleDowngrade(params: {
   }
   if (entitlement.periodEnd === null || !entitlement.accessGranted) {
     return { outcome: "no_active_paid_plan" };
+  }
+  if (entitlement.cancelAtPeriodEnd) {
+    return { outcome: "already_cancelled" };
   }
   if (entitlement.planCode === targetPlanCode) {
     return { outcome: "same_plan" };

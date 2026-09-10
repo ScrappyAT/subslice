@@ -59,6 +59,11 @@ export async function POST(request: Request) {
         { error: "There is no active paid period to downgrade from." },
         { status: 400 },
       );
+    case "already_cancelled":
+      return NextResponse.json(
+        { error: "Your subscription is already set to cancel — resubscribe instead of downgrading." },
+        { status: 400 },
+      );
     case "invalid_target":
       return NextResponse.json({ error: "Unknown or unavailable plan code." }, { status: 400 });
     case "inconsistent":

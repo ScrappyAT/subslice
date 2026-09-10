@@ -181,8 +181,11 @@ model PaymentEvent {
   periodStart DateTime?
   periodEnd   DateTime?
 
-  /// Failure reason, or the user's cancellation reason.
-  reason String?
+  /// Failure reason, or the user's cancellation reason. Free text from a
+  /// user for the latter — VarChar(500), not a bare TEXT column, so the
+  /// length cap is a database constraint, not only the zod schema in
+  /// front of it (lib/validation/schemas.ts's cancellationReasonSchema).
+  reason String? @db.VarChar(500)
 
   /// The raw provider payload as received, for dispute evidence. Never
   /// contains card data — the provider does not send it and must not be asked
@@ -233,7 +236,11 @@ model Subscription {
   /// currentPeriodEnd — never an immediate cutoff.
   cancelAtPeriodEnd  Boolean   @default(false)
   cancelledAt        DateTime?
-  cancellationReason String?
+  /// Projected from CANCELLATION_REASON_PROVIDED — see
+  /// lib/subscriptionProjection.ts. Same VarChar(500) bound as
+  /// PaymentEvent.reason, so the cache can never hold something longer
+  /// than the source event was ever allowed to record.
+  cancellationReason String? @db.VarChar(500)
 
   /// A scheduled downgrade. Applied at currentPeriodEnd, not immediately.
   pendingPlanCode String?

@@ -6,6 +6,7 @@ import { appendPaymentEvent } from "./paymentLog";
 import { deriveEntitlement } from "./entitlement";
 import { yearlyPeriodEnd } from "./period";
 import { scheduleDowngrade, cancelScheduledDowngrade } from "./downgrade";
+import { requestCancellation } from "./cancellation";
 
 // --- Pure derivation cases: no database, matching lib/entitlement.test.ts's
 // own style, since this is confirming that module's already-built
@@ -157,6 +158,30 @@ describe("scheduleDowngrade", () => {
     });
 
     expect(result.outcome).toBe("would_be_upgrade");
+  });
+
+  it("a cancelled subscription cannot schedule a downgrade — without this guard, DOWNGRADE_SCHEDULED's unconditional cancelAtPeriodEnd=false would silently un-cancel the user", async () => {
+    const start = new Date(Date.UTC(2026, 0, 1));
+    const end = yearlyPeriodEnd(start);
+    await subscribe(user, "yearly", start, end);
+    const now = new Date(Date.UTC(2026, 5, 1));
+
+    const cancelled = await requestCancellation({ userId: user.id, now });
+    expect(cancelled.outcome).toBe("cancelled");
+
+    const result = await scheduleDowngrade({ userId: user.id, targetPlanCode: "monthly", now });
+    expect(result.outcome).toBe("already_cancelled");
+
+    // Pin the actual guard, not just the result: no DOWNGRADE_SCHEDULED row
+    // was written, and re-deriving from the full log still shows the
+    // subscription cancelled with nothing pending — the exact state a
+    // missing guard would have silently overturned.
+    const rows = await prisma.paymentEvent.findMany({ where: { userId: user.id, type: "DOWNGRADE_SCHEDULED" } });
+    expect(rows).toHaveLength(0);
+
+    const events = await prisma.paymentEvent.findMany({ where: { userId: user.id }, orderBy: { seq: "asc" } });
+    const entitlement = deriveEntitlement(events, now);
+    expect(entitlement).toMatchObject({ cancelAtPeriodEnd: true, pendingPlanCode: null });
   });
 
   it("downgrading with no active period is rejected", async () => {

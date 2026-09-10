@@ -6,7 +6,12 @@ import type { PlanCode } from "./plans";
 
 export type PreviewCancellationResult =
   | { outcome: "previewed"; planCode: PlanCode; periodEnd: Date }
-  | { outcome: "no_active_paid_plan" }
+  /** planCode here is always "free" — deriveEntitlement's own contract is
+   * that planCode is never absent, only ever the plan actually on record
+   * (AGENTS.md). Step 12 renders against this: a discriminated union where
+   * every branch names the plan, never one where the caller has to treat
+   * "no result" as "must be free". */
+  | { outcome: "no_active_paid_plan"; planCode: PlanCode }
   | { outcome: "inconsistent" };
 
 /**
@@ -29,7 +34,7 @@ export async function previewCancellation(params: {
     return { outcome: "inconsistent" };
   }
   if (entitlement.periodEnd === null || !entitlement.accessGranted) {
-    return { outcome: "no_active_paid_plan" };
+    return { outcome: "no_active_paid_plan", planCode: entitlement.planCode };
   }
 
   return { outcome: "previewed", planCode: entitlement.planCode, periodEnd: entitlement.periodEnd };
@@ -37,8 +42,8 @@ export async function previewCancellation(params: {
 
 export type RequestCancellationResult =
   | { outcome: "cancelled"; planCode: PlanCode; periodEnd: Date }
-  | { outcome: "already_cancelled" }
-  | { outcome: "no_active_paid_plan" }
+  | { outcome: "already_cancelled"; planCode: PlanCode; periodEnd: Date }
+  | { outcome: "no_active_paid_plan"; planCode: PlanCode }
   | { outcome: "inconsistent" };
 
 /**
@@ -85,10 +90,10 @@ export async function requestCancellation(params: {
     return { outcome: "inconsistent" };
   }
   if (entitlement.periodEnd === null || !entitlement.accessGranted) {
-    return { outcome: "no_active_paid_plan" };
+    return { outcome: "no_active_paid_plan", planCode: entitlement.planCode };
   }
   if (entitlement.cancelAtPeriodEnd) {
-    return { outcome: "already_cancelled" };
+    return { outcome: "already_cancelled", planCode: entitlement.planCode, periodEnd: entitlement.periodEnd };
   }
 
   await appendPaymentEvent({

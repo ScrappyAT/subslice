@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "./prisma";
 import { appendPaymentEvent } from "./paymentLog";
 import { deriveEntitlement } from "./entitlement";
+import { refreshSubscriptionProjection } from "./subscriptionProjection";
 import { monthlyPeriodEnd, yearlyPeriodEnd } from "./period";
 import {
   previewCancellation,
@@ -116,6 +117,53 @@ describe("deriveEntitlement — cancellation (pure, no database)", () => {
     expect(result.status).toBe("inconsistent");
   });
 
+  it("a fulfilment event wins over an earlier cancellation regardless of which has the later createdAt — seq order decides, not wall-clock time", () => {
+    // createdAt is deliberately backwards: the fulfilment event (seq 2)
+    // carries an EARLIER createdAt than the cancellation it must still
+    // beat (seq 1). If deriveEntitlement ever started consulting
+    // createdAt instead of array/seq order, this is the test that would
+    // catch it — a correct implementation ignores createdAt entirely and
+    // this passes anyway.
+    const cancelledAt = new Date(Date.UTC(2026, 0, 2));
+    const paidAgainAt = new Date(Date.UTC(2026, 0, 1)); // earlier wall-clock time, later seq
+
+    const events: PaymentEvent[] = [
+      makeEvent({
+        type: "ENTITLEMENT_GRANTED",
+        planCode: "yearly",
+        periodStart: start,
+        periodEnd: end,
+        amountMinor: 2500000,
+        currency: "NGN",
+        providerReference: "ref_seq_order",
+        createdAt: new Date(Date.UTC(2025, 11, 1)),
+      }),
+      makeEvent({ type: "CANCELLATION_REQUESTED", planCode: "yearly", createdAt: cancelledAt }),
+      makeEvent({
+        type: "ENTITLEMENT_GRANTED",
+        planCode: "yearly",
+        periodStart: end,
+        periodEnd: yearlyPeriodEnd(end),
+        amountMinor: 2500000,
+        currency: "NGN",
+        providerReference: "ref_seq_order_2",
+        createdAt: paidAgainAt,
+      }),
+    ];
+
+    const result = deriveEntitlement(events, new Date(Date.UTC(2026, 5, 1)));
+
+    // The later-in-the-log fulfilment wins: cancellation cleared, period
+    // extended to the new grant's end — exactly as ENTITLEMENT_GRANTED's
+    // unconditional `cancelAtPeriodEnd = false` dictates, unaffected by
+    // createdAt being "before" the cancellation it supersedes.
+    expect(result).toMatchObject({
+      status: "ok",
+      cancelAtPeriodEnd: false,
+      periodEnd: yearlyPeriodEnd(end),
+    });
+  });
+
   it("cancelling supersedes a pending downgrade", () => {
     const withPendingDowngrade: PaymentEvent[] = [
       makeEvent({
@@ -184,9 +232,9 @@ describe("previewCancellation", () => {
     expect(rows).toHaveLength(1); // only the seeded grant — preview wrote nothing
   });
 
-  it("rejects when there is no active paid plan", async () => {
+  it("rejects when there is no active paid plan, naming the plan rather than omitting it", async () => {
     const result = await previewCancellation({ userId: user.id, now: new Date() });
-    expect(result.outcome).toBe("no_active_paid_plan");
+    expect(result).toEqual({ outcome: "no_active_paid_plan", planCode: "free" });
   });
 });
 
@@ -210,7 +258,7 @@ describe("requestCancellation", () => {
     expect(sub?.cancelledAt).not.toBeNull();
   });
 
-  it("rejects a second cancellation of an already-cancelled subscription", async () => {
+  it("rejects a second cancellation of an already-cancelled subscription, naming the plan and date", async () => {
     const start = new Date(Date.UTC(2026, 0, 1));
     const end = yearlyPeriodEnd(start);
     await subscribe(user, "yearly", start, end);
@@ -219,12 +267,12 @@ describe("requestCancellation", () => {
     await requestCancellation({ userId: user.id, now });
     const second = await requestCancellation({ userId: user.id, now });
 
-    expect(second.outcome).toBe("already_cancelled");
+    expect(second).toEqual({ outcome: "already_cancelled", planCode: "yearly", periodEnd: end });
   });
 
-  it("rejects when there is no active paid plan", async () => {
+  it("rejects when there is no active paid plan, naming the plan rather than omitting it", async () => {
     const result = await requestCancellation({ userId: user.id, now: new Date() });
-    expect(result.outcome).toBe("no_active_paid_plan");
+    expect(result).toEqual({ outcome: "no_active_paid_plan", planCode: "free" });
   });
 
   it("cancel, resubscribe, cancel again in a later period: no key collision", async () => {
@@ -251,6 +299,48 @@ describe("requestCancellation", () => {
     expect(rows.map((r) => r.idempotencyKey).sort()).toEqual(
       [`cancel:${user.id}:${end1.toISOString()}`, `cancel:${user.id}:${end2.toISOString()}`].sort(),
     );
+  });
+
+  it("cancel anchored to P1, then a fulfilment event extends the period to P2: the anchor moves, cancelAtPeriodEnd clears, and a second cancellation writes cleanly under P2", async () => {
+    const start = new Date(Date.UTC(2026, 0, 1));
+    const end1 = monthlyPeriodEnd(start); // P1
+    await subscribe(user, "monthly", start, end1);
+    const now = new Date(Date.UTC(2026, 0, 15)); // still within P1
+
+    const first = await requestCancellation({ userId: user.id, now });
+    expect(first).toEqual({ outcome: "cancelled", planCode: "monthly", periodEnd: end1 });
+
+    // A fulfilment event — a real payment, not a UI action — extends the
+    // existing period rather than closing it: same convention
+    // lib/entitlement.test.ts's "paid twice" case uses (periodStart set to
+    // the existing periodEnd, not to `now`).
+    const end2 = monthlyPeriodEnd(end1); // P2
+    await subscribe(user, "monthly", end1, end2);
+
+    // The new grant unconditionally clears cancelAtPeriodEnd
+    // (lib/entitlement.ts's ENTITLEMENT_GRANTED case) — confirmed directly
+    // before acting on it again, so this test pins *why* a second
+    // CANCELLATION_REQUESTED is even legal here: it is cancelling a live,
+    // uncancelled subscription, not re-cancelling a dead one.
+    const midEvents = await prisma.paymentEvent.findMany({ where: { userId: user.id }, orderBy: { seq: "asc" } });
+    const midEntitlement = deriveEntitlement(midEvents, now);
+    expect(midEntitlement).toMatchObject({ cancelAtPeriodEnd: false, planCode: "monthly", periodEnd: end2 });
+
+    const second = await requestCancellation({ userId: user.id, now });
+    expect(second).toEqual({ outcome: "cancelled", planCode: "monthly", periodEnd: end2 });
+
+    // Two CANCELLATION_REQUESTED rows for one subscription: a valid state,
+    // not an inconsistency — each is scoped to the period it was requested
+    // in, and the anchor (currentPeriodEnd) is exactly what moved, from P1
+    // to P2, once a genuine new payment moved it.
+    const rows = await prisma.paymentEvent.findMany({
+      where: { userId: user.id, type: "CANCELLATION_REQUESTED" },
+      orderBy: { seq: "asc" },
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0].idempotencyKey).toBe(`cancel:${user.id}:${end1.toISOString()}`);
+    expect(rows[1].idempotencyKey).toBe(`cancel:${user.id}:${end2.toISOString()}`);
+    expect(rows[0].idempotencyKey).not.toBe(rows[1].idempotencyKey);
   });
 });
 
@@ -282,6 +372,32 @@ describe("provideCancellationReason", () => {
 
     const sub = await prisma.subscription.findUnique({ where: { userId: user.id } });
     expect(sub?.cancellationReason).toBe("too expensive");
+  });
+
+  it("a full rebuild from events alone repopulates the projected cancellationReason", async () => {
+    const start = new Date(Date.UTC(2026, 0, 1));
+    const end = yearlyPeriodEnd(start);
+    await subscribe(user, "yearly", start, end);
+    const now = new Date(Date.UTC(2026, 5, 1));
+
+    await requestCancellation({ userId: user.id, now });
+    await provideCancellationReason({ userId: user.id, reason: "too expensive", now });
+
+    // Destroy the cache outright — not just stale, gone — to prove the
+    // projection is genuinely rebuildable and not merely incrementally
+    // patched. Subscription is a derived cache (AGENTS.md); the event log
+    // is the only place this fact is allowed to actually live.
+    await prisma.subscription.delete({ where: { userId: user.id } });
+    expect(await prisma.subscription.findUnique({ where: { userId: user.id } })).toBeNull();
+
+    await refreshSubscriptionProjection(user.id, now);
+
+    const rebuilt = await prisma.subscription.findUnique({ where: { userId: user.id } });
+    expect(rebuilt).toMatchObject({
+      planCode: "yearly",
+      cancelAtPeriodEnd: true,
+      cancellationReason: "too expensive",
+    });
   });
 
   it("rejects a reason with no pending cancellation", async () => {

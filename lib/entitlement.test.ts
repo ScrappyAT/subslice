@@ -97,6 +97,18 @@ describe("deriveEntitlement", () => {
       },
     },
     {
+      name: "now === periodEnd exactly -> the boundary has already passed: no access (exclusive, not inclusive)",
+      events: [grant({ planCode: "monthly", periodStart: jan1, periodEnd: jan1PeriodEnd })],
+      now: new Date(jan1PeriodEnd.getTime()), // bit-for-bit equal to periodEnd, not ±1ms
+      expected: {
+        status: "ok",
+        planCode: "monthly",
+        accessGranted: false,
+        periodStart: jan1,
+        periodEnd: jan1PeriodEnd,
+      },
+    },
+    {
       name: "same log, one day after period end -> no access, no event needed to expire it",
       events: [grant({ planCode: "monthly", periodStart: jan1, periodEnd: jan1PeriodEnd })],
       now: new Date(jan1PeriodEnd.getTime() + 24 * 60 * 60 * 1000),

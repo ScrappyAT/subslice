@@ -72,6 +72,14 @@ export const checkoutSchema = z.object({
   planCode: z.string().min(1, "Plan code is required"),
 });
 
+export const confirmUpgradeSchema = z.object({
+  // The tx_ref from an earlier quote, and nothing else — there is no
+  // amount field here at all. zod strips unknown keys by default, so a
+  // client-submitted charge amount is not merely distrusted, it is never
+  // even parsed into the value the route goes on to use.
+  txRef: z.string().min(1, "txRef is required"),
+});
+
 export type SignupInput = z.infer<typeof signupSchema>;
 export type SigninInput = z.infer<typeof signinSchema>;
 export type ResetRequestInput = z.infer<typeof resetRequestSchema>;
@@ -79,3 +87,4 @@ export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 export type VerifyCodeInput = z.infer<typeof verifyCodeSchema>;
 export type ResendCodeInput = z.infer<typeof resendCodeSchema>;
 export type CheckoutInput = z.infer<typeof checkoutSchema>;
+export type ConfirmUpgradeInput = z.infer<typeof confirmUpgradeSchema>;

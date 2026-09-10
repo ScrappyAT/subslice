@@ -45,6 +45,12 @@ export const RATE_LIMITS = {
   // (including a run of real provider failures) while bounding how many
   // provider calls and log rows one account can generate in a burst.
   checkout: { limit: 10, windowSeconds: 10 * 60 },
+
+  // Same reasoning as checkout above: confirming an upgrade also makes a
+  // real request to Flutterwave, and is a distinct action from starting a
+  // plain subscribe, so it gets its own bucket rather than sharing
+  // checkout's.
+  upgradeConfirm: { limit: 10, windowSeconds: 10 * 60 },
 } as const;
 
 interface RateLimitResult {

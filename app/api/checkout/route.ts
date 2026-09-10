@@ -1,21 +1,10 @@
-import { randomBytes } from "crypto";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth/session";
 import { checkRateLimit, RATE_LIMITS } from "@/lib/rate-limit";
 import { checkoutSchema } from "@/lib/validation/schemas";
-import { appendPaymentEvent } from "@/lib/paymentLog";
-import { initiatePayment } from "@/lib/flutterwave/payments";
-
-// Unique per attempt (128 bits of randomness — a collision is not a
-// practical concern), unguessable (a guessable tx_ref would let one
-// request probe for another user's in-flight checkout), and traceable back
-// to the user and plan without embedding either: traceability comes from
-// looking this value up as PaymentEvent.txRef, where userId and planCode
-// are already columns on that row, not from decoding the string itself.
-function generateTxRef(): string {
-  return `chk_${randomBytes(16).toString("hex")}`;
-}
+import { generateTxRef } from "@/lib/txRef";
+import { initiateCheckoutCharge } from "@/lib/checkoutInitiation";
 
 export async function POST(request: Request) {
   // getSession(), not requireSession(): this is a JSON API route, not a
@@ -66,40 +55,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "The free plan has nothing to charge for." }, { status: 400 });
   }
 
-  const txRef = generateTxRef();
-
-  // Written before Flutterwave is ever called. If the call below fails or
-  // times out, there is still a row proving the attempt happened —
-  // reversing this order would let a crash between the two lose that
-  // record entirely, which is exactly what an append-only log exists to
-  // prevent.
-  const initiated = await appendPaymentEvent({
-    type: "CHECKOUT_INITIATED",
-    userId: user.id,
-    idempotencyKey: `checkout:${txRef}`,
-    txRef,
-    planCode: plan.code,
-    // The amount quoted right now — verification (step 7) compares against
-    // this recorded value, never against Plan's price at verify time.
-    amountMinor: plan.amountMinor,
-    currency: plan.currency.trim(),
-  });
-  if (initiated.outcome === "duplicate") {
-    // txRef is freshly generated with 128 bits of randomness. Reaching
-    // this branch means a genuine collision or a bug in generateTxRef, not
-    // a normal client-facing condition — there is no meaningful retry for
-    // the caller here, only something to investigate server-side.
-    console.error("Freshly generated txRef collided with an existing idempotencyKey", { txRef });
-    return NextResponse.json({ error: "Could not start checkout. Please try again." }, { status: 500 });
-  }
-
   const appBaseUrl = process.env.APP_BASE_URL;
   if (!appBaseUrl) {
     throw new Error("APP_BASE_URL is not set");
   }
 
-  const result = await initiatePayment({
-    txRef,
+  const result = await initiateCheckoutCharge({
+    userId: user.id,
+    txRef: generateTxRef(),
+    planCode: plan.code,
+    // The amount quoted right now — verification (step 7) compares against
+    // this recorded value, never against Plan's price at verify time.
     amountMinor: plan.amountMinor,
     currency: plan.currency.trim(), // CHAR(3) pads short values on read
     customerEmail: user.email,
@@ -112,17 +78,17 @@ export async function POST(request: Request) {
     redirectUrl: `${appBaseUrl}/checkout/return`,
   });
 
-  if (!result.ok) {
-    await appendPaymentEvent({
-      type: "PAYMENT_FAILED",
-      userId: user.id,
-      idempotencyKey: `failed:${txRef}`,
-      txRef,
-      planCode: plan.code,
-      reason: result.reason,
-    });
-    // Never the raw provider string — result.reason is one of this app's
-    // own three labels, not anything Flutterwave sent.
+  if (result.outcome === "duplicate_tx_ref") {
+    // tx_ref is freshly generated with 128 bits of randomness. Reaching
+    // this branch means a genuine collision, not a normal client-facing
+    // condition — there is no meaningful retry for the caller here, only
+    // something to investigate server-side.
+    console.error("Freshly generated txRef collided with an existing idempotencyKey");
+    return NextResponse.json({ error: "Could not start checkout. Please try again." }, { status: 500 });
+  }
+  if (result.outcome === "provider_error") {
+    // Never the raw provider string — initiateCheckoutCharge's failure
+    // reasons are this app's own labels, not anything Flutterwave sent.
     return NextResponse.json(
       { error: "We couldn't reach the payment provider. Please try again." },
       { status: 502 },

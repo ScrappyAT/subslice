@@ -5,6 +5,7 @@ import { addCalendarMonths, monthlyPeriodEnd, yearlyPeriodEnd } from "./period";
 import { appendPaymentEvent } from "./paymentLog";
 import { verifyTransaction } from "./flutterwave/verify";
 import { deriveEntitlement } from "./entitlement";
+import { refreshSubscriptionProjection } from "./subscriptionProjection";
 
 /**
  * Extends a period from its true origin rather than from wherever it
@@ -275,6 +276,14 @@ export async function fulfilCheckout(params: {
 
   const cycleMonths = checkoutEvent.planCode === "yearly" ? 12 : 1;
 
+  // A matching PRORATION_QUOTED for this same txRef, if any — an upgrade
+  // was quoted before this charge was confirmed (step 9). Absent for a
+  // plain subscribe or a repeat payment on the same plan, neither of which
+  // was ever quoted; creditAppliedMinor on the grant below is then left
+  // unset, matching a fresh subscribe having no previous plan to credit
+  // from.
+  const quoteEvent = priorEvents.find((e) => e.type === "PRORATION_QUOTED" && e.txRef === txRef);
+
   let periodStart: Date;
   let periodEnd: Date;
 
@@ -293,10 +302,21 @@ export async function fulfilCheckout(params: {
     periodEnd = extendFromAnchor(firstGrantPeriodStart, cycleMonths, currentEntitlement.periodEnd);
   } else {
     // No unexpired period on this same plan to extend — the first grant
-    // ever, a previous period that already ran out, or (not handled by
-    // this endpoint yet) a different plan. Either way this grant starts
-    // its own fresh period from the moment of payment, and this payment
-    // becomes the anchor if it's the first one.
+    // ever, a previous period that already ran out, or an upgrade to a
+    // *different* plan (currentEntitlement.planCode === checkoutEvent.
+    // planCode is false for monthly -> yearly, so the pay-twice extension
+    // branch above cannot fire here — confirmed by this step's tests).
+    // Either way this grant starts its own fresh period from the moment of
+    // payment, and this payment becomes the anchor if it's the first one.
+    //
+    // For an upgrade specifically, this is deliberate, not merely "no
+    // branch matched": the user paid the prorated amount precisely to get
+    // yearly access starting now, not to wait out the rest of the old
+    // monthly period first. The old monthly period is superseded — its
+    // remaining value was already converted into the credit that reduced
+    // this charge (see quoteEvent below) — whereas the pay-twice case
+    // extends because both payments are for the *same* plan and neither
+    // has been given anything the other could double-count.
     periodStart = now;
     periodEnd = checkoutEvent.planCode === "yearly" ? yearlyPeriodEnd(now) : monthlyPeriodEnd(now);
   }
@@ -313,6 +333,10 @@ export async function fulfilCheckout(params: {
     periodEnd,
     amountMinor: verifiedAmountMinor,
     currency: expectedCurrency,
+    // The credit actually applied, carried over from the quote — absent
+    // (undefined) for a plain subscribe or a pay-twice extension, neither
+    // of which was ever quoted.
+    creditAppliedMinor: quoteEvent?.creditAppliedMinor ?? undefined,
   });
   if (grantedEvent.outcome === "duplicate") {
     // PAYMENT_VERIFIED above was a fresh insert but this wasn't — not
@@ -324,6 +348,12 @@ export async function fulfilCheckout(params: {
     });
     return { outcome: "duplicate" };
   }
+
+  // Subscription is a cache, never a source of truth (AGENTS.md) — this
+  // keeps it in step with what was just granted, for cheap reads and the
+  // brief's before/after screenshot. Every entitlement *decision* still
+  // goes through deriveEntitlement, never this row.
+  await refreshSubscriptionProjection(checkoutEvent.userId, now);
 
   return {
     outcome: "granted",

@@ -64,7 +64,16 @@ export async function POST(request: Request) {
 
   const appBaseUrl = process.env.APP_BASE_URL;
   if (!appBaseUrl) {
-    throw new Error("APP_BASE_URL is not set");
+    // Step 13: this used to throw. An uncaught throw here is a Route
+    // Handler exception, which Next.js turns into a 500 with a completely
+    // EMPTY body in production (confirmed empirically) — "renders
+    // nothing", the exact failure AGENTS.md's error-handling rule rules
+    // out. A misconfigured server is a real, if rare, condition; logged
+    // for our own diagnosis, never described to the caller as anything
+    // more specific than "something went wrong" (nothing about env vars
+    // or server internals reaches the response body).
+    console.error("Cannot initiate checkout: APP_BASE_URL is not set");
+    return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 });
   }
 
   const result = await initiateCheckoutCharge({

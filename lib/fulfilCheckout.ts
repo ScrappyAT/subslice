@@ -129,6 +129,30 @@ export async function fulfilCheckout(params: {
 }): Promise<FulfilmentResult> {
   const { userId, txRef, transactionId, now } = params;
 
+  // Step 13, item 0a: a short-circuit, not a substitute for the real
+  // guarantee. If this transactionId was already granted, there is
+  // nothing left to verify — return "duplicate" without calling
+  // Flutterwave again. This is a check-THEN-call, not a check-then-insert:
+  // the ENTITLEMENT_GRANTED unique constraint on `granted:{providerTxId}`
+  // (lib/paymentLog.ts) is still what actually enforces idempotency below.
+  // Two concurrent calls can both pass this check before either has
+  // written anything (this read is not exclusive with the write later in
+  // this function) — losing that race costs one redundant verify call,
+  // exactly what this check exists to make rare, not a duplicate row: the
+  // insert-and-catch on that unique constraint still catches it. What this
+  // closes is the COMMON case that produced the misleading PAYMENT_FAILED
+  // at seq 180 investigated in this step: the webhook and the return view
+  // are two triggers for one code path, and whichever arrives second, for
+  // a transaction the other has already fulfilled, no longer re-verifies
+  // and no longer risks writing a failure row over a payment that
+  // actually succeeded.
+  const existingGrant = await prisma.paymentEvent.findFirst({
+    where: { type: "ENTITLEMENT_GRANTED", providerReference: transactionId },
+  });
+  if (existingGrant) {
+    return { outcome: "duplicate" };
+  }
+
   // The event this whole call is trying to confirm actually happened. If
   // there is no such attempt on record at all, there is nothing to verify
   // against and nothing to blame it on — no PAYMENT_FAILED write, since

@@ -51,7 +51,12 @@ export async function POST(request: Request) {
 
   const appBaseUrl = process.env.APP_BASE_URL;
   if (!appBaseUrl) {
-    throw new Error("APP_BASE_URL is not set");
+    // Step 13: same fix as app/api/checkout/route.ts — a Route Handler
+    // throw becomes a 500 with an EMPTY body in production (confirmed
+    // empirically), which is "renders nothing". Logged for diagnosis,
+    // nothing about env vars or internals reaches the response.
+    console.error("Cannot confirm upgrade: APP_BASE_URL is not set");
+    return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 });
   }
 
   const result = await confirmUpgrade({

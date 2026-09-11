@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "./prisma";
 import { appendPaymentEvent } from "./paymentLog";
 import { deriveEntitlement } from "./entitlement";
-import { addCalendarMonths, monthlyPeriodEnd } from "./period";
+import { addCalendarMonths, monthlyPeriodEnd, yearlyPeriodEnd } from "./period";
 import { requestCancellation } from "./cancellation";
 
 // The verify call is the one thing this suite never touches for real —
@@ -160,6 +160,53 @@ describe("fulfilCheckout", () => {
       secondNow,
     );
     expect(entitlement).toMatchObject({ status: "ok", planCode: "monthly", accessGranted: true });
+  });
+
+  it("an upgrade resets the anchor too, not only a lapse: a further yearly payment anchors on the upgrade date, not the original monthly grant", async () => {
+    // Step 12b, item 3: this half of the currentRunAnchor fix was not what
+    // was asked for (only the lapse case was) — pinned here, explicitly,
+    // as intended rather than reverted. Reasoning: currentRunAnchor resets
+    // whenever a grant's periodStart doesn't chain from the preceding
+    // grant's periodEnd, and an upgrade's periodStart is the moment of
+    // upgrade (mid-cycle), which is never equal to the old plan's
+    // periodEnd — the same test that would fire for a lapse. There is no
+    // principled reason to keep preserving the OLD monthly plan's anchor
+    // day for a YEARLY plan's future extensions once the monthly cycle no
+    // longer exists to be anchored to; the day the yearly plan actually
+    // started is the only anchor that still means anything.
+    const monthlyAnchor = new Date(Date.UTC(2026, 0, 1)); // 1 Jan
+    const txRef1 = await initiateCheckout(user); // monthly, the default
+    successfulVerify({}, txRef1);
+    const first = await fulfilCheckout({ userId: user.id, txRef: txRef1, transactionId: randomUUID(), now: monthlyAnchor });
+    expect(first.outcome).toBe("granted");
+    if (first.outcome !== "granted") throw new Error("unreachable");
+    expect(first.periodEnd).toEqual(monthlyPeriodEnd(monthlyAnchor)); // 1 Feb
+
+    // Upgrade to yearly mid-cycle — a distinct checkout, a distinct plan.
+    const upgradeNow = new Date(Date.UTC(2026, 0, 20)); // 20 Jan, inside the monthly period
+    const txRef2 = await initiateCheckout(user, { planCode: "yearly", amountMinor: 2500000, currency: "NGN" });
+    successfulVerify({ amount: "25000.00" }, txRef2);
+    const upgrade = await fulfilCheckout({ userId: user.id, txRef: txRef2, transactionId: randomUUID(), now: upgradeNow });
+    expect(upgrade.outcome).toBe("granted");
+    if (upgrade.outcome !== "granted") throw new Error("unreachable");
+    expect(upgrade.periodStart).toEqual(upgradeNow); // fresh period, not chained from 1 Feb
+    expect(upgrade.periodEnd).toEqual(yearlyPeriodEnd(upgradeNow)); // 20 Jan 2027
+
+    // A further yearly payment, while the yearly period is still open.
+    const thirdNow = new Date(Date.UTC(2026, 5, 1));
+    const txRef3 = await initiateCheckout(user, { planCode: "yearly", amountMinor: 2500000, currency: "NGN" });
+    successfulVerify({ amount: "25000.00" }, txRef3);
+    const third = await fulfilCheckout({ userId: user.id, txRef: txRef3, transactionId: randomUUID(), now: thirdNow });
+    expect(third.outcome).toBe("granted");
+    if (third.outcome !== "granted") throw new Error("unreachable");
+    expect(third.periodStart).toEqual(upgrade.periodEnd); // continuous
+
+    // The distinguishing assertion: one more year from 20 Jan 2026 (the
+    // upgrade date) is 20 Jan 2028. One more year from 1 Jan 2026 (the
+    // original, pre-upgrade monthly anchor) would instead give 1 Jan
+    // 2028 — a different day-of-month, which is exactly what would prove
+    // the anchor had NOT reset on the upgrade.
+    expect(third.periodEnd).toEqual(new Date(Date.UTC(2028, 0, 20)));
   });
 
   it("reactivation through the real write path: grant, cancel, a second distinct transaction extends the period and clears cancelAtPeriodEnd", async () => {

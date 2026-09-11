@@ -1,4 +1,5 @@
 import { randomBytes, createHash } from "crypto";
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
@@ -36,7 +37,17 @@ export async function createSession(userId: string): Promise<void> {
   });
 }
 
-export async function getSession() {
+// React's cache() memoizes per request (per render pass), keyed on the
+// function and its arguments — getSession takes none, so within one
+// request this runs the cookie read and the database lookup at most once,
+// no matter how many times it's called. This is what makes the layout's
+// requireSession() call and a page's own requireSession() call return the
+// literal same session, not two independent lookups that merely tend to
+// agree: the second call never reaches cookies() or prisma again, it
+// receives the first call's already-resolved promise. Memoization is
+// request-scoped only (a fresh cache per request), so this never leaks a
+// session across requests or between users.
+export const getSession = cache(async () => {
   const cookieStore = await cookies();
   const rawToken = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   if (!rawToken) {
@@ -52,7 +63,7 @@ export async function getSession() {
     where: { tokenHash, expiresAt: { gt: new Date() } },
     include: { user: true },
   });
-}
+});
 
 export async function destroySession(): Promise<void> {
   const cookieStore = await cookies();

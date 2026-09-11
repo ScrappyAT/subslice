@@ -234,6 +234,16 @@ not against the documentation:
   that window now extends to 15 May — one calendar month — not 31 May.
   Implemented in `lib/fulfilCheckout.ts`'s `currentRunAnchor`, tested in
   `lib/fulfilCheckout.test.ts`.
+
+  **The plan-change half of that reset was not part of this correction as
+  originally asked for** — only the lapse case was — and was added
+  silently alongside it in step 12. Confirmed as intended in step 12b
+  rather than reverted: an upgrade's `periodStart` is the moment of
+  upgrade, which never chains from the OLD plan's `periodEnd` either, for
+  the same structural reason a lapse doesn't, so the two cannot be told
+  apart by this function and there is no reason to keep the old plan's
+  anchor day once the plan itself has changed. Its own pinning test is
+  `lib/fulfilCheckout.test.ts`'s "an upgrade resets the anchor too".
   
   - **Derivation replays recorded periods; it does not recompute them.** The
   anchor-preserving extension math is a write-path responsibility. Any step

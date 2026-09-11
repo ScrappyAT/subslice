@@ -3,14 +3,13 @@ import { listActivePlans } from "@/lib/plans";
 import { getCurrentEntitlement, effectivePlanForDisplay } from "@/lib/currentEntitlement";
 import { formatForDisplay } from "@/lib/money";
 import { formatDate } from "@/lib/formatDate";
+import PlanActions from "@/components/PlanActions";
 
 /**
- * Free, monthly, yearly, current plan indicated. Display only — this step
- * does not add a plan-change flow beyond the existing upgrade and
- * downgrade endpoints (the brief's own "do not build" line), and nothing
- * here asked for subscribe/upgrade/downgrade controls specifically, only
- * for the current plan to be indicated correctly. See the report for why
- * that scoping was chosen deliberately rather than assumed.
+ * Free, monthly, yearly, current plan indicated — plus the controls step
+ * 12b asked for, wired to the endpoints steps 6, 9 and 10 already built
+ * (components/PlanActions.tsx). No new endpoint, no new domain logic, no
+ * reactivate control.
  *
  * Everything below comes from deriveEntitlement (via
  * lib/currentEntitlement.ts) — nothing reads Subscription.
@@ -66,6 +65,13 @@ export default async function PlansPage() {
           </li>
         ))}
       </ul>
+
+      <PlanActions
+        effectivePlan={currentPlan}
+        cancelAtPeriodEnd={entitlement.cancelAtPeriodEnd}
+        pendingPlanCode={entitlement.pendingPlanCode}
+        periodEndIso={entitlement.periodEnd ? entitlement.periodEnd.toISOString() : null}
+      />
     </div>
   );
 }

@@ -45,13 +45,29 @@ function extendFromAnchor(anchor: Date, cycleMonths: number, currentPeriodEnd: D
  * grant's periodStart exactly equals the PRECEDING grant's periodEnd —
  * that equality is what "the same run" means: fulfilCheckout's own extend
  * branch is the only thing that ever produces it (`periodStart =
- * currentEntitlement.periodEnd`), so a break in that chain means the
- * grant at the break started a fresh period from `now` instead (a lapse,
- * or an upgrade to a different plan) — and that grant's own periodStart
- * is where the current run's anchor resets to. Within one continuous run
- * (no lapse, no plan change) this walks all the way back to the very
- * first grant, same as before — the 31 Jan -> 28 Feb -> 31 Mar case is
- * unchanged.
+ * currentEntitlement.periodEnd`). Within one continuous run this walks all
+ * the way back to the very first grant, same as before — the 31 Jan ->
+ * 28 Feb -> 31 Mar case is unchanged.
+ *
+ * Two different breaks reset it, and only one of them was actually asked
+ * for:
+ * - A LAPSE (this is the fix that was requested): a grant whose
+ *   periodStart is genuinely later than the preceding grant's periodEnd,
+ *   with dead time in between.
+ * - A PLAN CHANGE (this half was not requested — added silently in step
+ *   12, then confirmed as intended rather than reverted in step 12b,
+ *   after being asked to justify it explicitly): an upgrade's periodStart
+ *   is the moment of upgrade, which is never equal to the OLD plan's
+ *   periodEnd either, for the same structural reason a lapse isn't — so
+ *   this function cannot tell the two apart, and there is no reason it
+ *   should try to. Once a plan changes, the old plan's anchor day has
+ *   nothing left to anchor: preserving a monthly billing date across an
+ *   upgrade to yearly would extend the yearly plan from a day-of-month
+ *   that was never yearly's own. lib/fulfilCheckout.test.ts's "an upgrade
+ *   resets the anchor too" case pins this as the intended behaviour, with
+ *   numbers chosen so the two possible anchors (the upgrade date vs. the
+ *   original pre-upgrade grant) produce different days-of-month and
+ *   therefore actually distinguish the two.
  */
 function currentRunAnchor(events: { type: string; periodStart: Date | null; periodEnd: Date | null }[]): Date | null {
   const grants = events.filter((e) => e.type === "ENTITLEMENT_GRANTED");

@@ -216,24 +216,24 @@ not against the documentation:
   compounds the clamp and permanently loses the original day-of-month. Any
   code that extends a period — the pay-twice case in particular — must add
   cycles from the subscription's original anchor day, derived from the first
-  `ENTITLEMENT_GRANTED` event in the log, not from whatever `currentPeriodEnd`
-  currently holds.
+  `ENTITLEMENT_GRANTED` event **of the current unbroken run**, not from
+  whatever `currentPeriodEnd` currently holds.
 
-  **"The first `ENTITLEMENT_GRANTED` event in the log" means literally the
-  first one ever, including across a lapse.** A payment after the period has
-  fully lapsed starts a fresh period from that payment's own date (see the
-  no-`SUBSCRIPTION_EXPIRED`-event rule above) — that part is correct and
-  tested — but if the user pays again after that while the fresh period is
-  still active, today's code still anchors the extension on the *original,
-  pre-lapse* grant, not on the date the lapsed subscription was restarted.
-  Concretely: first grant 31 Jan, a lapse, repayment 15 Mar (fresh period,
-  15 Mar–15 Apr, correct), then a further payment inside that window extends
-  to 31 May by the letter of this rule, where an anchor reset at the 15 Mar
-  restart would give 15 May. This is not a contradiction between the code
-  and this document — both agree on "the first grant, full stop" — it is a
-  gap this document does not yet resolve, left as literally specified rather
-  than silently reinterpreted, pending an explicit decision on whether a
-  lapse should reset the anchor.
+  **Resolved in step 12** (was left as an open gap at the step 11
+  close-out): "the first grant" means the first `ENTITLEMENT_GRANTED` of
+  the current run, not the first one ever recorded. A run is unbroken for
+  as long as each grant's `periodStart` exactly equals the *preceding*
+  grant's `periodEnd` — the pay-twice/extension case's own signature. A
+  grant whose `periodStart` does not chain this way (a lapse-then-restart,
+  or an upgrade to a different plan) starts a new run, and that grant's own
+  `periodStart` becomes the anchor for everything extended after it, until
+  the next break. Within one continuous run this walks all the way back to
+  the very first grant, exactly as before — 31 Jan → 28 Feb → 31 Mar is
+  unchanged. Across a lapse it is not: first grant 31 Jan, a lapse,
+  repayment 15 Mar (fresh period, 15 Mar–15 Apr), a further payment inside
+  that window now extends to 15 May — one calendar month — not 31 May.
+  Implemented in `lib/fulfilCheckout.ts`'s `currentRunAnchor`, tested in
+  `lib/fulfilCheckout.test.ts`.
   
   - **Derivation replays recorded periods; it does not recompute them.** The
   anchor-preserving extension math is a write-path responsibility. Any step

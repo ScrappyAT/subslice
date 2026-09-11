@@ -31,6 +31,49 @@ function extendFromAnchor(anchor: Date, cycleMonths: number, currentPeriodEnd: D
   return addCalendarMonths(anchor, (cyclesSoFar + 1) * cycleMonths);
 }
 
+/**
+ * The anchor for the CURRENT unbroken run of periods — not the first
+ * ENTITLEMENT_GRANTED ever recorded. Fixed in step 12 (was documented, in
+ * the step 11 close-out, as "literally the first one ever, including
+ * across a lapse" — arithmetically wrong: first grant 31 Jan, a lapse,
+ * repay 15 Mar (a fresh period, 15 Mar-15 Apr, correct on its own), then a
+ * further payment inside that window extended to 31 May under the old
+ * rule — 46 days charged for one month's payment, because it kept
+ * anchoring on the pre-lapse 31 Jan.
+ *
+ * Walks backward from the latest grant, in seq order, only while each
+ * grant's periodStart exactly equals the PRECEDING grant's periodEnd —
+ * that equality is what "the same run" means: fulfilCheckout's own extend
+ * branch is the only thing that ever produces it (`periodStart =
+ * currentEntitlement.periodEnd`), so a break in that chain means the
+ * grant at the break started a fresh period from `now` instead (a lapse,
+ * or an upgrade to a different plan) — and that grant's own periodStart
+ * is where the current run's anchor resets to. Within one continuous run
+ * (no lapse, no plan change) this walks all the way back to the very
+ * first grant, same as before — the 31 Jan -> 28 Feb -> 31 Mar case is
+ * unchanged.
+ */
+function currentRunAnchor(events: { type: string; periodStart: Date | null; periodEnd: Date | null }[]): Date | null {
+  const grants = events.filter((e) => e.type === "ENTITLEMENT_GRANTED");
+  if (grants.length === 0) return null;
+
+  let anchor = grants[grants.length - 1].periodStart;
+  for (let i = grants.length - 1; i > 0; i--) {
+    const current = grants[i];
+    const prev = grants[i - 1];
+    if (
+      prev.periodEnd !== null &&
+      current.periodStart !== null &&
+      prev.periodEnd.getTime() === current.periodStart.getTime()
+    ) {
+      anchor = prev.periodStart;
+    } else {
+      break;
+    }
+  }
+  return anchor;
+}
+
 export type FulfilmentResult =
   | {
       outcome: "granted";
@@ -268,11 +311,9 @@ export async function fulfilCheckout(params: {
     orderBy: { seq: "asc" },
   });
   const currentEntitlement = deriveEntitlement(priorEvents, now);
-  // The subscription's original anchor day — literally the first
-  // ENTITLEMENT_GRANTED ever recorded, per AGENTS.md, not the first for
-  // this plan or this streak.
-  const firstGrantPeriodStart =
-    priorEvents.find((e) => e.type === "ENTITLEMENT_GRANTED")?.periodStart ?? null;
+  // The current run's anchor day — see currentRunAnchor's own doc for why
+  // this is not simply "the first ENTITLEMENT_GRANTED ever".
+  const runAnchor = currentRunAnchor(priorEvents);
 
   const cycleMonths = checkoutEvent.planCode === "yearly" ? 12 : 1;
 
@@ -292,7 +333,7 @@ export async function fulfilCheckout(params: {
     currentEntitlement.accessGranted &&
     currentEntitlement.planCode === checkoutEvent.planCode &&
     currentEntitlement.periodEnd !== null &&
-    firstGrantPeriodStart !== null
+    runAnchor !== null
   ) {
     // Same plan, still within its current period: extend it. periodStart
     // is where the existing period ends — not "now" — so the two periods
@@ -310,7 +351,7 @@ export async function fulfilCheckout(params: {
     // follow-up, and lib/fulfilCheckout.test.ts's "a grant after the
     // period has expired" case, which pins precisely this.
     periodStart = currentEntitlement.periodEnd;
-    periodEnd = extendFromAnchor(firstGrantPeriodStart, cycleMonths, currentEntitlement.periodEnd);
+    periodEnd = extendFromAnchor(runAnchor, cycleMonths, currentEntitlement.periodEnd);
   } else {
     // No unexpired period on this same plan to extend — the first grant
     // ever, a previous period that already ran out, or an upgrade to a

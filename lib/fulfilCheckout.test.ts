@@ -336,6 +336,61 @@ describe("fulfilCheckout", () => {
     expect(second.periodEnd).toEqual(monthlyPeriodEnd(lateNow));
   });
 
+  it("a payment after a lapse-and-restart extends by one interval, not 46 days — the anchor resets at the restart", async () => {
+    // Step 12, item 0: pins the fix for the bug the step 11 close-out only
+    // documented. Old behaviour: a further payment inside the post-lapse
+    // period kept anchoring on the ORIGINAL pre-lapse grant (31 Jan),
+    // extending to 31 May — 46 days charged for one month. Correct
+    // behaviour: the restart grant (15 Mar) is itself the new anchor for
+    // this run, so the next extension is exactly one calendar month later.
+    const originalAnchor = new Date(Date.UTC(2026, 0, 31)); // 31 Jan
+    const txRef1 = await initiateCheckout(user);
+    successfulVerify({}, txRef1);
+    const first = await fulfilCheckout({
+      userId: user.id,
+      txRef: txRef1,
+      transactionId: randomUUID(),
+      now: originalAnchor,
+    });
+    expect(first.outcome).toBe("granted");
+    if (first.outcome !== "granted") throw new Error("unreachable");
+    expect(first.periodEnd).toEqual(new Date(Date.UTC(2026, 1, 28))); // clamped, as usual
+
+    // A full lapse — well past 28 Feb, nothing paid in between.
+    const restartNow = new Date(Date.UTC(2026, 2, 15)); // 15 Mar
+    const txRef2 = await initiateCheckout(user);
+    successfulVerify({}, txRef2);
+    const restart = await fulfilCheckout({
+      userId: user.id,
+      txRef: txRef2,
+      transactionId: randomUUID(),
+      now: restartNow,
+    });
+    expect(restart.outcome).toBe("granted");
+    if (restart.outcome !== "granted") throw new Error("unreachable");
+    expect(restart.periodStart).toEqual(restartNow);
+    expect(restart.periodEnd).toEqual(new Date(Date.UTC(2026, 3, 15))); // 15 Apr
+
+    // A further payment while the restarted period is still open.
+    const thirdNow = new Date(Date.UTC(2026, 2, 25)); // 25 Mar, inside 15 Mar-15 Apr
+    const txRef3 = await initiateCheckout(user);
+    successfulVerify({}, txRef3);
+    const third = await fulfilCheckout({
+      userId: user.id,
+      txRef: txRef3,
+      transactionId: randomUUID(),
+      now: thirdNow,
+    });
+    expect(third.outcome).toBe("granted");
+    if (third.outcome !== "granted") throw new Error("unreachable");
+    expect(third.periodStart).toEqual(restart.periodEnd); // 15 Apr, continuous
+    // One interval from the restart (15 Apr -> 15 May, 30 days) — not 31
+    // May (46 days), which is what anchoring on the pre-lapse 31 Jan would
+    // have produced.
+    expect(third.periodEnd).toEqual(new Date(Date.UTC(2026, 4, 15)));
+    expect(third.periodEnd.getTime() - third.periodStart.getTime()).toBe(30 * 24 * 60 * 60 * 1000);
+  });
+
   it("amount tampered in the verify response -> rejected, PAYMENT_FAILED written, no entitlement", async () => {
     // Recorded at checkout as 250000 (2500.00); tampered here against
     // *that* value, not Plan's current price — a distinction the next

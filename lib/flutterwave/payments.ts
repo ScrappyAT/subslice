@@ -61,13 +61,16 @@ export async function initiatePayment(input: InitiatePaymentInput): Promise<Init
         : undefined;
 
     if (!response.ok || typeof link !== "string" || link === "") {
-      // Logged for our own debugging only — the caller never sees this
-      // body, and it never contains the secret key (only the response
-      // Flutterwave sent back).
-      console.error("Flutterwave payment initiation failed", {
-        status: response.status,
-        body,
-      });
+      // Step 13 close-out, item 2: status and message only, never the
+      // full body. This endpoint's response carries no card data, but
+      // logging the whole thing regardless was never something to
+      // decide per call site — the fix is the same shape everywhere this
+      // codebase logs a Flutterwave response.
+      const message =
+        body !== null && typeof body === "object" && "message" in body && typeof body.message === "string"
+          ? body.message
+          : "no message in response";
+      console.error("Flutterwave payment initiation failed", { status: response.status, message });
       return { ok: false, reason: "provider_error" };
     }
 

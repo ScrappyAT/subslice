@@ -122,6 +122,14 @@ model Plan {
 ///   property that the log is readable as a record of what happened. Added
 ///   in a follow-up migration to step 10, after DOWNGRADE_SCHEDULED already
 ///   existed.
+/// - FULFILMENT_DUPLICATE_IGNORED mirrors WEBHOOK_DUPLICATE_IGNORED, one
+///   level up: the webhook and the return view are two triggers for one
+///   fulfilment code path (lib/fulfilCheckout.ts), and whichever arrives
+///   second for an already-granted transaction must not be recorded as
+///   PAYMENT_FAILED — that call never failed, it was never attempted,
+///   short-circuited before verifyTransaction was ever called. Explicitly
+///   a no-op record, ignored entirely by deriveEntitlement, the same as
+///   its webhook counterpart. Added in a follow-up migration to step 13.
 enum PaymentEventType {
   CHECKOUT_INITIATED
   PRORATION_QUOTED
@@ -134,6 +142,7 @@ enum PaymentEventType {
   DOWNGRADE_CANCELLED
   CANCELLATION_REQUESTED
   CANCELLATION_REASON_PROVIDED
+  FULFILMENT_DUPLICATE_IGNORED
 }
 
 /// APPEND ONLY. Rows are inserted, never updated, never deleted.

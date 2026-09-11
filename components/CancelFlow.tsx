@@ -41,7 +41,7 @@ export default function CancelFlow({ planCode, periodEnd }: CancelFlowProps) {
           setStep({ name: "cancelled", periodEnd: body.periodEnd });
           return;
         }
-        setError(body?.error ?? "Something went wrong. Please try again.");
+        setError(response.status === 401 ? "session_expired" : (body?.error ?? "Something went wrong. Please try again."));
         return;
       }
       setStep({ name: "reason-prompt", periodEnd: body.periodEnd });
@@ -83,8 +83,16 @@ export default function CancelFlow({ planCode, periodEnd }: CancelFlowProps) {
           . After that, your subscription ends — this is not an immediate cutoff.
         </p>
         {error ? (
+          // Step 13 close-out, item 4: same inline error, plus a sign-in
+          // link when the session expired — no redirect logic.
           <p role="alert" className="text-sm text-red-600">
-            {error}
+            {error === "session_expired" ? (
+              <>
+                Your session has expired. <Link href="/signin" className="underline">Sign in again</Link>.
+              </>
+            ) : (
+              error
+            )}
           </p>
         ) : null}
         <div className="flex gap-3">

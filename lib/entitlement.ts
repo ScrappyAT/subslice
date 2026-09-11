@@ -237,6 +237,12 @@ export function deriveEntitlement(events: PaymentEvent[], now: Date): Entitlemen
         // Explicitly a no-op record of a repeat webhook. Zero effect is
         // the entire point of this event type.
         break;
+      case "FULFILMENT_DUPLICATE_IGNORED":
+        // Step 13's counterpart to WEBHOOK_DUPLICATE_IGNORED, one level
+        // up: a second (or third) fulfilment trigger for an
+        // already-granted transaction. Explicitly a no-op record, same
+        // reasoning — zero effect is the entire point.
+        break;
       default: {
         const exhaustive: never = event.type;
         return inconsistent(`Unhandled PaymentEventType: ${String(exhaustive)}`, event.seq);

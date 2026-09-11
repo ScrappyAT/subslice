@@ -32,6 +32,17 @@ export type VerifyTransactionResult =
 // leave the return view stalled indefinitely.
 const PROVIDER_TIMEOUT_MS = 10_000;
 
+/** Step 13 close-out, item 2: a verify response body can carry masked PAN,
+ * expiry and issuer (see AGENTS.md hard rule 3's card-data boundary) —
+ * PCI-adjacent data that must not sit in stdout. Only ever logs status and
+ * message; the full body still goes to PaymentEvent.payload, the intended
+ * place for it, on the success path in lib/fulfilCheckout.ts. */
+function safeMessage(body: unknown): string {
+  return body !== null && typeof body === "object" && "message" in body && typeof body.message === "string"
+    ? body.message
+    : "no message in response";
+}
+
 /**
  * GET /v3/transactions/{id}/verify on the pinned v3 base URL. The only call
  * to this endpoint in the codebase, and the seam the return view's tests
@@ -54,13 +65,13 @@ export async function verifyTransaction(transactionId: string): Promise<VerifyTr
     const body: unknown = await response.json().catch(() => null);
 
     if (!response.ok || body === null || typeof body !== "object") {
-      console.error("Flutterwave verify failed", { status: response.status, body });
+      console.error("Flutterwave verify failed", { status: response.status, message: safeMessage(body) });
       return { ok: false, reason: "provider_error", raw: body };
     }
 
     const data = (body as { data?: unknown }).data;
     if (data === null || typeof data !== "object") {
-      console.error("Flutterwave verify returned no data", { body });
+      console.error("Flutterwave verify returned no data", { status: response.status, message: safeMessage(body) });
       return { ok: false, reason: "provider_error", raw: body };
     }
 

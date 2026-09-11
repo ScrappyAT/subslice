@@ -155,6 +155,16 @@ export interface CancellationReasonProvidedInput extends CommonFields {
   reason: string;
 }
 
+export interface FulfilmentDuplicateIgnoredInput extends CommonFields {
+  type: "FULFILMENT_DUPLICATE_IGNORED";
+  /** Key is `fulfilment-duplicate:{providerTxId}:{attemptedAt ISO ms}` —
+   * timestamp-suffixed, mirroring WEBHOOK_DUPLICATE_IGNORED exactly, so a
+   * third (or further) redundant trigger for the same transaction records
+   * its own row instead of colliding with the second's. */
+  providerReference: string;
+  txRef?: string;
+}
+
 export type PaymentEventInput =
   | CheckoutInitiatedInput
   | ProrationQuotedInput
@@ -166,7 +176,8 @@ export type PaymentEventInput =
   | DowngradeScheduledInput
   | DowngradeCancelledInput
   | CancellationRequestedInput
-  | CancellationReasonProvidedInput;
+  | CancellationReasonProvidedInput
+  | FulfilmentDuplicateIgnoredInput;
 
 // --- Result -----------------------------------------------------------------
 
@@ -275,6 +286,8 @@ function toCreateData(input: PaymentEventInput): Prisma.PaymentEventUncheckedCre
       };
     case "CANCELLATION_REASON_PROVIDED":
       return { ...base, reason: input.reason };
+    case "FULFILMENT_DUPLICATE_IGNORED":
+      return { ...base, providerReference: input.providerReference, txRef: input.txRef };
     default: {
       const exhaustive: never = input;
       throw new Error(`Unhandled PaymentEventType: ${JSON.stringify(exhaustive)}`);

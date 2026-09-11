@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { formatForDisplay } from "@/lib/money";
 import type { PlanCode } from "@/lib/plans";
 
@@ -99,7 +100,7 @@ export default function PlanActions({ effectivePlan, cancelAtPeriodEnd, pendingP
       });
       const body = await response.json().catch(() => null);
       if (!response.ok) {
-        setError(body?.error ?? "Could not confirm the upgrade. Please try again.");
+        setError(response.status === 401 ? "session_expired" : (body?.error ?? "Could not confirm the upgrade. Please try again."));
         return;
       }
       window.location.href = body.checkoutUrl;
@@ -121,7 +122,7 @@ export default function PlanActions({ effectivePlan, cancelAtPeriodEnd, pendingP
       });
       const body = await response.json().catch(() => null);
       if (!response.ok) {
-        setError(body?.error ?? "Could not schedule the downgrade. Please try again.");
+        setError(response.status === 401 ? "session_expired" : (body?.error ?? "Could not schedule the downgrade. Please try again."));
         return;
       }
       router.refresh();
@@ -150,9 +151,18 @@ export default function PlanActions({ effectivePlan, cancelAtPeriodEnd, pendingP
     }
   }
 
+  // Step 13 close-out, item 4: session-expired at upgrade confirm and
+  // downgrade keeps this same inline error, with a sign-in link added —
+  // no redirect logic, just something to click.
   const errorBlock = error ? (
     <p role="alert" className="mt-3 text-sm text-red-600">
-      {error}
+      {error === "session_expired" ? (
+        <>
+          Your session has expired. <Link href="/signin" className="underline">Sign in again</Link>.
+        </>
+      ) : (
+        error
+      )}
     </p>
   ) : null;
 

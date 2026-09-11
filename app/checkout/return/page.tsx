@@ -66,5 +66,18 @@ export default async function CheckoutReturnPage({
           <p>We couldn&apos;t confirm this payment. If you were charged, contact support.</p>
         </main>
       );
+    case "needs_review":
+      return (
+        <main>
+          <p>
+            Your payment was received. We&apos;re reviewing your account before granting access — contact
+            support if this doesn&apos;t resolve shortly.
+          </p>
+        </main>
+      );
+    default: {
+      const exhaustive: never = result;
+      throw new Error(`Unhandled FulfilmentResult outcome: ${JSON.stringify(exhaustive)}`);
+    }
   }
 }

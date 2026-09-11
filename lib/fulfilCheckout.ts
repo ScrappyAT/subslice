@@ -106,7 +106,16 @@ export type FulfilmentResult =
    * webhook, in step 8) gets to resolve it correctly instead of this call
    * locking in a premature failure. */
   | { outcome: "pending" }
-  | { outcome: "rejected"; reason: string };
+  | { outcome: "rejected"; reason: string }
+  /** Step 13 close-out, item 3: the payment genuinely verified (that
+   * write already happened, above, before this check) but the prior log
+   * is inconsistent — deriveEntitlement abstained, meaning there is no
+   * coherent "current period" to extend and no honest basis for computing
+   * a fresh one either, since "fresh" is itself a claim about what came
+   * before. Granting on top of a log that cannot be read would add a
+   * charge to a log that still cannot be read. No ENTITLEMENT_GRANTED is
+   * written; the account needs a human to look at the log directly. */
+  | { outcome: "needs_review" };
 
 /**
  * Server-side verification and fulfilment for the checkout return view.
@@ -146,10 +155,23 @@ export async function fulfilCheckout(params: {
   // a transaction the other has already fulfilled, no longer re-verifies
   // and no longer risks writing a failure row over a payment that
   // actually succeeded.
+  //
+  // Step 13 close-out, item 1: this redundant trigger is itself recorded
+  // now — FULFILMENT_DUPLICATE_IGNORED, the WEBHOOK_DUPLICATE_IGNORED
+  // precedent one level up. A no-op for entitlement (lib/entitlement.ts
+  // ignores it entirely) and timestamp-suffixed the same way, so a third
+  // or further trigger records its own row rather than colliding.
   const existingGrant = await prisma.paymentEvent.findFirst({
     where: { type: "ENTITLEMENT_GRANTED", providerReference: transactionId },
   });
   if (existingGrant) {
+    await appendPaymentEvent({
+      type: "FULFILMENT_DUPLICATE_IGNORED",
+      userId,
+      idempotencyKey: `fulfilment-duplicate:${transactionId}:${now.toISOString()}`,
+      providerReference: transactionId,
+      txRef,
+    });
     return { outcome: "duplicate" };
   }
 
@@ -351,6 +373,17 @@ export async function fulfilCheckout(params: {
     orderBy: { seq: "asc" },
   });
   const currentEntitlement = deriveEntitlement(priorEvents, now);
+
+  // Step 13 close-out, item 3: derivation is the only place entitlement is
+  // decided (AGENTS.md), and "inconsistent" means it abstained — there is
+  // no coherent prior state to extend or supersede. PAYMENT_VERIFIED is
+  // already written above, so the payment itself is on the record; this
+  // just refuses to compound an unreadable log with a grant it would have
+  // no honest basis for computing a period against.
+  if (currentEntitlement.status === "inconsistent") {
+    return { outcome: "needs_review" };
+  }
+
   // The current run's anchor day — see currentRunAnchor's own doc for why
   // this is not simply "the first ENTITLEMENT_GRANTED ever".
   const runAnchor = currentRunAnchor(priorEvents);

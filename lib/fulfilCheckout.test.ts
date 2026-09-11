@@ -120,19 +120,30 @@ describe("fulfilCheckout", () => {
     // verifyTransaction at all — the mock's call count stays at 1, not 2.
     expect(mockVerify).toHaveBeenCalledTimes(1);
 
-    const rows = await prisma.paymentEvent.findMany({ where: { userId: user.id } });
+    const rows = await prisma.paymentEvent.findMany({ where: { userId: user.id }, orderBy: { seq: "asc" } });
     // Still exactly one CHECKOUT_INITIATED, one PAYMENT_VERIFIED, one
-    // ENTITLEMENT_GRANTED — the replay added nothing.
-    expect(rows).toHaveLength(3);
+    // ENTITLEMENT_GRANTED — the replay added nothing to entitlement, but
+    // it is not entirely invisible: FULFILMENT_DUPLICATE_IGNORED records
+    // that the replay happened (Step 13 close-out, item 1), a no-op for
+    // derivation the same way WEBHOOK_DUPLICATE_IGNORED is.
+    expect(rows.map((r) => r.type)).toEqual([
+      "CHECKOUT_INITIATED",
+      "PAYMENT_VERIFIED",
+      "ENTITLEMENT_GRANTED",
+      "FULFILMENT_DUPLICATE_IGNORED",
+    ]);
   });
 
-  it("a redundant trigger for an already-granted transaction never writes PAYMENT_FAILED, even when its own (never-made) verify call would have failed", async () => {
-    // Step 13, item 0: pins the fix for the seq-180 defect investigated in
-    // this step — a second fulfilment attempt (webhook after the return
-    // view, or vice versa, or a page revisit) for a transaction that
-    // already succeeded must not record a failure. Proven here by
-    // configuring the SECOND call's mock to fail, and confirming it is
-    // never invoked at all — the short-circuit fires first.
+  it("a redundant trigger for an already-granted transaction records FULFILMENT_DUPLICATE_IGNORED, never PAYMENT_FAILED, even when its own (never-made) verify call would have failed", async () => {
+    // Step 13, item 0 + close-out item 1: pins the fix for the seq-180
+    // defect investigated in this step — a second fulfilment attempt
+    // (webhook after the return view, or vice versa, or a page revisit)
+    // for a transaction that already succeeded must not record a failure,
+    // and now records what actually happened instead of nothing. Proven
+    // by configuring the SECOND call's mock to fail, and confirming it is
+    // never invoked at all — the short-circuit fires first. A third
+    // trigger is included to prove the timestamp-suffixed key does not
+    // collide (WEBHOOK_DUPLICATE_IGNORED's own precedent).
     const txRef = await initiateCheckout(user);
     const transactionId = randomUUID();
     successfulVerify({}, txRef);
@@ -140,13 +151,30 @@ describe("fulfilCheckout", () => {
     expect(first.outcome).toBe("granted");
 
     mockVerify.mockResolvedValue({ ok: false, reason: "provider_error" });
-    const second = await fulfilCheckout({ userId: user.id, txRef, transactionId, now: new Date(2026, 0, 1) });
+    const second = await fulfilCheckout({ userId: user.id, txRef, transactionId, now: new Date(2026, 0, 1, 0, 0, 1) });
     expect(second.outcome).toBe("duplicate");
+    const third = await fulfilCheckout({ userId: user.id, txRef, transactionId, now: new Date(2026, 0, 1, 0, 0, 2) });
+    expect(third.outcome).toBe("duplicate");
 
     const rows = await prisma.paymentEvent.findMany({ where: { userId: user.id }, orderBy: { seq: "asc" } });
-    expect(rows.map((r) => r.type)).toEqual(["CHECKOUT_INITIATED", "PAYMENT_VERIFIED", "ENTITLEMENT_GRANTED"]);
+    expect(rows.map((r) => r.type)).toEqual([
+      "CHECKOUT_INITIATED",
+      "PAYMENT_VERIFIED",
+      "ENTITLEMENT_GRANTED",
+      "FULFILMENT_DUPLICATE_IGNORED",
+      "FULFILMENT_DUPLICATE_IGNORED",
+    ]);
     // No PAYMENT_FAILED anywhere in the log for this user.
     expect(rows.some((r) => r.type === "PAYMENT_FAILED")).toBe(false);
+
+    const duplicates = rows.filter((r) => r.type === "FULFILMENT_DUPLICATE_IGNORED");
+    expect(duplicates).toHaveLength(2);
+    expect(new Set(duplicates.map((r) => r.idempotencyKey)).size).toBe(2); // no key collision
+    expect(duplicates.every((r) => r.providerReference === transactionId)).toBe(true);
+
+    // deriveEntitlement ignores it entirely — moves nothing.
+    const entitlement = deriveEntitlement(rows, new Date(2026, 0, 1));
+    expect(entitlement).toMatchObject({ status: "ok", planCode: "monthly", accessGranted: true });
   });
 
   it("two grants for monthly -> one continuous period, not two overlapping ones", async () => {
@@ -411,18 +439,13 @@ describe("fulfilCheckout", () => {
     expect(second.periodEnd).toEqual(monthlyPeriodEnd(lateNow));
   });
 
-  it("a checkout confirmed against an already-inconsistent prior log still grants a fresh period — the inconsistency is neither surfaced nor blocked", async () => {
-    // Step 13, item 1's fourth view: the return view has no explicit
-    // "inconsistent" handling of its own the way the three app/(app) pages
-    // do. fulfilCheckout's own currentEntitlement.status === "ok" check
-    // (the extend-branch condition) simply evaluates false when the prior
-    // log is inconsistent, falling through to the "fresh period from now"
-    // branch exactly as it would for a lapsed or brand-new user — the
-    // pre-existing inconsistency is never reported to the caller and never
-    // corrected. This is a real finding, reported as such, not fixed here:
-    // it renders a normal success message (not nothing, not a raw error,
-    // not leaked internals), so it falls outside this step's stated fix
-    // criteria.
+  it("a checkout confirmed against an already-inconsistent prior log records the verification but refuses to grant", async () => {
+    // Step 13 close-out, item 3: the step-13 finding (this used to fall
+    // through to the "fresh period from now" branch and grant anyway) is
+    // now fixed. Derivation is the only place entitlement is decided
+    // (AGENTS.md); "inconsistent" means it abstained, so nothing is
+    // granted on top of a log that cannot be read. The payment itself is
+    // still on the record: PAYMENT_VERIFIED is written either way.
     await appendPaymentEvent({
       userId: user.id,
       type: "DOWNGRADE_SCHEDULED",
@@ -436,10 +459,20 @@ describe("fulfilCheckout", () => {
     expect(preCheck.status).toBe("inconsistent");
 
     const txRef = await initiateCheckout(user);
+    const transactionId = randomUUID();
     successfulVerify({}, txRef);
-    const result = await fulfilCheckout({ userId: user.id, txRef, transactionId: randomUUID(), now: new Date(2026, 0, 1) });
+    const result = await fulfilCheckout({ userId: user.id, txRef, transactionId, now: new Date(2026, 0, 1) });
 
-    expect(result.outcome).toBe("granted");
+    expect(result.outcome).toBe("needs_review");
+
+    const rows = await prisma.paymentEvent.findMany({ where: { userId: user.id }, orderBy: { seq: "asc" } });
+    expect(rows.map((r) => r.type)).toEqual([
+      "DOWNGRADE_SCHEDULED",
+      "CHECKOUT_INITIATED",
+      "PAYMENT_VERIFIED",
+    ]);
+    expect(rows.some((r) => r.type === "ENTITLEMENT_GRANTED")).toBe(false);
+    expect(rows.find((r) => r.type === "PAYMENT_VERIFIED")?.providerReference).toBe(transactionId);
   });
 
   it("a payment after a lapse-and-restart extends by one interval, not 46 days — the anchor resets at the restart", async () => {

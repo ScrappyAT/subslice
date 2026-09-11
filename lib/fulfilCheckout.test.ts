@@ -5,6 +5,7 @@ import { prisma } from "./prisma";
 import { appendPaymentEvent } from "./paymentLog";
 import { deriveEntitlement } from "./entitlement";
 import { addCalendarMonths, monthlyPeriodEnd } from "./period";
+import { requestCancellation } from "./cancellation";
 
 // The verify call is the one thing this suite never touches for real —
 // everything else (session's worth of user data, the checkout event, the
@@ -159,6 +160,62 @@ describe("fulfilCheckout", () => {
       secondNow,
     );
     expect(entitlement).toMatchObject({ status: "ok", planCode: "monthly", accessGranted: true });
+  });
+
+  it("reactivation through the real write path: grant, cancel, a second distinct transaction extends the period and clears cancelAtPeriodEnd", async () => {
+    // Step 11 close-out, item 1: re-proves the reactivation pin from
+    // lib/cancellation.test.ts (which uses a hand-written fixture, flagged
+    // there) through fulfilCheckout for both grants and requestCancellation
+    // for the cancellation — no event in this test is constructed by hand.
+    const anchor = new Date(Date.UTC(2026, 0, 1));
+    const txRef1 = await initiateCheckout(user);
+    successfulVerify({}, txRef1);
+    const first = await fulfilCheckout({ userId: user.id, txRef: txRef1, transactionId: randomUUID(), now: anchor });
+    expect(first.outcome).toBe("granted");
+    if (first.outcome !== "granted") throw new Error("unreachable");
+
+    // Cancel while still well within the first period.
+    const cancelNow = new Date(Date.UTC(2026, 0, 15));
+    const cancelled = await requestCancellation({ userId: user.id, now: cancelNow });
+    expect(cancelled).toEqual({ outcome: "cancelled", planCode: "monthly", periodEnd: first.periodEnd });
+
+    // A second, DISTINCT transaction (its own checkout, its own
+    // transactionId) — not a retry of the first — arrives before the
+    // (cancelling) period ends.
+    const secondNow = new Date(Date.UTC(2026, 0, 20));
+    const txRef2 = await initiateCheckout(user);
+    successfulVerify({}, txRef2);
+    const second = await fulfilCheckout({ userId: user.id, txRef: txRef2, transactionId: randomUUID(), now: secondNow });
+    expect(second.outcome).toBe("granted");
+    if (second.outcome !== "granted") throw new Error("unreachable");
+
+    // Extended, anchor-preserved: periodStart chains from the first
+    // period's end, periodEnd is two calendar months from the true 1 Jan
+    // anchor (this anchor never clamps, so the same value either way —
+    // the point here is reactivation, not clamping, which the dedicated
+    // anchor tests already cover).
+    expect(second.periodStart).toEqual(first.periodEnd);
+    expect(second.periodEnd).toEqual(addCalendarMonths(anchor, 2));
+
+    const events = await prisma.paymentEvent.findMany({ where: { userId: user.id }, orderBy: { seq: "asc" } });
+    expect(events.map((e) => e.type)).toEqual([
+      "CHECKOUT_INITIATED",
+      "PAYMENT_VERIFIED",
+      "ENTITLEMENT_GRANTED",
+      "CANCELLATION_REQUESTED",
+      "CHECKOUT_INITIATED",
+      "PAYMENT_VERIFIED",
+      "ENTITLEMENT_GRANTED",
+    ]);
+
+    const entitlement = deriveEntitlement(events, secondNow);
+    expect(entitlement).toMatchObject({
+      status: "ok",
+      planCode: "monthly",
+      accessGranted: true,
+      cancelAtPeriodEnd: false,
+      periodEnd: second.periodEnd,
+    });
   });
 
   it("anchor case: 31 Jan clamped to 28 Feb, second payment extends to 31 Mar, not 28 Mar", async () => {

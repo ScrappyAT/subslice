@@ -218,6 +218,22 @@ not against the documentation:
   cycles from the subscription's original anchor day, derived from the first
   `ENTITLEMENT_GRANTED` event in the log, not from whatever `currentPeriodEnd`
   currently holds.
+
+  **"The first `ENTITLEMENT_GRANTED` event in the log" means literally the
+  first one ever, including across a lapse.** A payment after the period has
+  fully lapsed starts a fresh period from that payment's own date (see the
+  no-`SUBSCRIPTION_EXPIRED`-event rule above) — that part is correct and
+  tested — but if the user pays again after that while the fresh period is
+  still active, today's code still anchors the extension on the *original,
+  pre-lapse* grant, not on the date the lapsed subscription was restarted.
+  Concretely: first grant 31 Jan, a lapse, repayment 15 Mar (fresh period,
+  15 Mar–15 Apr, correct), then a further payment inside that window extends
+  to 31 May by the letter of this rule, where an anchor reset at the 15 Mar
+  restart would give 15 May. This is not a contradiction between the code
+  and this document — both agree on "the first grant, full stop" — it is a
+  gap this document does not yet resolve, left as literally specified rather
+  than silently reinterpreted, pending an explicit decision on whether a
+  lapse should reset the anchor.
   
   - **Derivation replays recorded periods; it does not recompute them.** The
   anchor-preserving extension math is a write-path responsibility. Any step

@@ -283,314 +283,359 @@ fact about any single row a `CHECK` constraint can see.
 
 ## Section 5: The Concepts
 
-### Minor units and why money is never a decimal
+### Minor units and why I don't store money as decimals
 
-**What it is.** Every amount in this system — a plan's price, a charge, a proration
-credit — is stored as a plain integer counting the currency's smallest unit (kobo for
-NGN), never a float and never a `Decimal` column.
+**What it is:**
+I store every amount as an integer representing the smallest unit of the currency. For NGN, that means kobo.
 
-**Why it is needed.** A float cannot represent most decimal fractions exactly (`0.1 +
-0.2 !== 0.3` in IEEE 754), so repeated arithmetic on money-as-float silently drifts. A
-`Decimal` type avoids that specific problem but reintroduces string/precision handling at
-every arithmetic site, and this project's provider boundary (Flutterwave) itself speaks
-major-unit decimal strings on the wire — the safest design is to never hold that
-representation anywhere except the one conversion point.
+So ₦2,500 is stored as `250000`, not `2500.00`.
 
-**How I implemented it.** `PaymentEvent.amountMinor`/`Plan.amountMinor` are `Int`
-columns. The one conversion function, `lib/money.ts`'s `toProviderAmount`/`fromProviderAmount`,
-sits at the provider boundary and does the major/minor conversion by string slicing on
-the digits (`splitMinorUnits`), not by division — `toProviderAmount(250000, "NGN") ===
-"2500.00"`. The converted value is never persisted; only the minor-units integer is.
-`fromProviderAmount` explicitly rejects a value with more fractional digits than the
-currency allows, rather than silently rounding a provider-reported amount.
+**Why I did it:**
+Money and floating-point numbers don't mix well. Something as simple as `0.1 + 0.2` doesn't always produce exactly `0.3` with IEEE 754 floats.
 
-**What I chose against, and why.** A `Decimal`/`numeric` Postgres column, with
-`Prisma.Decimal` in application code. Rejected because it still requires careful
-string-based arithmetic to avoid the same class of precision bug as float, for no
-benefit over a plain integer once minor units are the unit of account — and it would
-have meant a second representation (major-unit `Decimal` at rest, major-unit string on
-the wire, minor-unit integer nowhere) instead of one.
+`Decimal` solves the floating-point problem, but it still means dealing with decimal/string conversions throughout the application.
 
-### The payment lifecycle: initiation, verification and fulfilment
+I wanted one representation of money throughout the system: integers in minor units.
 
-**What it is.** Three distinct steps, each its own event type: `CHECKOUT_INITIATED`
-(the attempt begins), `PAYMENT_VERIFIED` (Flutterwave's own server confirms the
-transaction succeeded), `ENTITLEMENT_GRANTED` (access is actually extended).
+**How I implemented it:**
+`PaymentEvent.amountMinor` and `Plan.amountMinor` are `Int` columns.
 
-**Why it is needed.** The brief's named trap is granting a subscription the moment a
-user lands on the success URL — a URL is not proof, only a hint that *something*
-happened. Collapsing verification and fulfilment into one step would also make it
-impossible to record "we confirmed this was real" as a fact independent of "and then we
-acted on it", which is exactly the distinction defence question 1 probes.
+The only place I convert between minor and major units is at the Flutterwave boundary in `lib/money.ts`.
 
-**How I implemented it.** `lib/checkoutInitiation.ts` writes `CHECKOUT_INITIATED` before
-ever calling Flutterwave. `lib/fulfilCheckout.ts` calls `GET
-/v3/transactions/{id}/verify` and writes `PAYMENT_VERIFIED` only if that response's own
-status is `"successful"` and the amount/currency match what was recorded at checkout
-(`lib/fulfilCheckout.ts:346`, four separate checks above it). `ENTITLEMENT_GRANTED` is
-written immediately after, in the same function call, at line 451 — the exact line
-defence question 1 asks for. Reaching `/checkout/return` directly, with any
-transaction id that doesn't pass every check, grants nothing (`"rejected"`).
+For example:
 
-**What I chose against, and why.** Trusting the return URL's `?status=successful` query
-parameter, which the brief explicitly names as the trap. Rejected outright — that value
-is read into a variable (`void params.status;`, `app/checkout/return/page.tsx:29`) and
-never used for anything.
+`toProviderAmount(250000, "NGN")` → `"2500.00"`
 
-### The payment log and what it proves in a dispute
+That converted value is sent to Flutterwave but never stored in my database. The database always keeps the integer value.
 
-**What it is.** `PaymentEvent`, an append-only table — rows are inserted, never updated
-or deleted — that is the actual source of truth, not `Subscription`'s cached columns.
+I also made `fromProviderAmount` reject values with more decimal places than the currency supports instead of silently rounding them.
 
-**Why it is needed.** The brief's own trap: "the subscription table already shows a
-status" is not the same claim as "here is what happened, in order, with timestamps". A
-status column is the present; the log is the history, and the history is what a dispute
-is resolved against.
+**What I decided not to use:**
+PostgreSQL `Decimal`/`numeric` with `Prisma.Decimal`.
 
-**How I implemented it.** Every write goes through `lib/paymentLog.ts`'s
-`appendPaymentEvent`, the only function in the codebase allowed to call
-`prisma.paymentEvent.create` (enforced by an ESLint rule, `eslint.config.mjs`, not only a
-comment). Nothing updates or deletes a row. For defence question 2 — a customer
-disputes a charge from three months ago — the answer is: query
-`PaymentEvent` for that user ordered by `seq`, and read the `CHECKOUT_INITIATED` →
-`PAYMENT_VERIFIED` → `ENTITLEMENT_GRANTED` triple for that `providerReference`, which
-between them carry the quoted amount, the verified amount, the raw provider response
-(`payload`), and the exact period granted — none of it read from `Subscription`, which
-is only ever a cache of what this same log already said.
+It solves the floating-point problem, but it introduces a different one: every amount arrives from the database as a Decimal object that has to be converted before it can be compared or used in arithmetic. That conversion is where mistakes creep in — dropping a Decimal into a plain JavaScript number for one quick calculation is exactly the failure mode minor units are meant to eliminate. Integers can be compared with `===` and added with `+` with no conversion step, so there is nowhere for that mistake to live.
 
-**What I chose against, and why.** A mutable `Subscription.status` column as the only
-record, updated in place on every transition. Rejected as exactly the trap named above —
-it would answer "what is true now" and nothing about "what happened, when, and why",
-which is the actual content of a dispute.
+---
+
+### Payment lifecycle: initiation, verification and fulfilment
+
+**What it is:**
+I treat payment as three separate steps:
+
+* `CHECKOUT_INITIATED` — the payment attempt starts.
+* `PAYMENT_VERIFIED` — Flutterwave confirms the transaction actually succeeded.
+* `ENTITLEMENT_GRANTED` — the user's subscription is actually extended.
+
+**Why it matters:**
+One of the easiest mistakes to make with payments is trusting the success page.
+
+Just because someone reaches `/checkout/return?status=successful` doesn't mean the payment succeeded.
+
+The server needs to verify it with the payment provider first.
+
+I also wanted verification and fulfilment to remain separate facts. Confirming that money was received is one thing. Giving the user access is another.
+
+**How I implemented it:**
+`lib/checkoutInitiation.ts` records `CHECKOUT_INITIATED` before calling Flutterwave.
+
+When fulfilment happens, `lib/fulfilCheckout.ts` calls Flutterwave's transaction verification endpoint:
+
+`GET /v3/transactions/{id}/verify`
+
+I only record `PAYMENT_VERIFIED` when the provider reports `"successful"` **and** the amount and currency match what I recorded when checkout started.
+
+Only after those checks pass do I write `ENTITLEMENT_GRANTED`.
+
+If someone goes directly to the success URL with an invalid transaction, nothing gets granted.
+
+**What I decided not to use:**
+The `status=successful` value from the return URL.
+
+I deliberately ignore it. It's useful as a redirect signal, but it isn't evidence that a payment succeeded.
+
+---
+
+### The payment log and what it can prove later
+
+**What it is:**
+`PaymentEvent` is an append-only table. Events are added, but never updated or deleted.
+
+The log is the source of truth. The `Subscription` table is just a representation of the current state.
+
+**Why it matters:**
+A subscription status can tell me that an account is active today.
+
+It can't tell me exactly how it got there.
+
+If someone disputes a payment three months later, I need to be able to reconstruct what happened: when the checkout started, when the payment was verified, when access was granted, how much was paid and which period was granted.
+
+That's what the event log gives me.
+
+**How I implemented it:**
+All payment events go through `appendPaymentEvent` in `lib/paymentLog.ts`.
+
+It's the only place in application code allowed to create a `PaymentEvent`, and that restriction is enforced with an ESLint rule. The only exemption is in tests that need to construct an invalid row deliberately, in order to prove a database constraint rejects it.
+
+For a disputed transaction, I can query the user's events by `seq` and follow the transaction's:
+
+`CHECKOUT_INITIATED → PAYMENT_VERIFIED → ENTITLEMENT_GRANTED`
+
+Each event contains the information needed to reconstruct what happened, including the provider reference, amounts, provider response and subscription period.
+
+I don't need to rely on the current `Subscription` row to tell that story.
+
+**What I decided not to use:**
+Updating rows in place when a payment's state changes, which is the more common design: one row per transaction, with a status column moved from pending to successful to refunded.
+
+It is simpler to query, but every update destroys the previous value. If a row currently reads "successful", nothing in the database says whether it was ever "failed", when it changed, or how many times. In a dispute, that missing history is the whole case. Appending instead means the table grows faster and the current state has to be derived rather than read, and I accepted both costs for the audit trail.
+
+---
 
 ### Idempotency in payments
 
-**What it is.** The guarantee that a repeated action — a retried webhook delivery, a
-second visit to the return URL for the same transaction — records once and is acted on
-once, never twice.
+**What it is:**
+If the same payment action gets triggered twice, it should only be processed once.
 
-**Why it is needed.** Both the return view and the webhook can independently trigger
-fulfilment for the same transaction (`app/checkout/return/page.tsx` and `app/api/webhooks/flutterwave/route.ts`
-both call `lib/fulfilCheckout.ts`'s `fulfilCheckout`). Without a real guarantee, that
-race can grant entitlement twice, or (as this project discovered — Section 6, Problem 4)
-misrecord a redundant retry as an outright failure.
+This can happen when a webhook is retried, a user refreshes the return page, or two requests reach the server at almost the same time.
 
-**How I implemented it.** A unique database constraint on `PaymentEvent.idempotencyKey`,
-not a check-then-insert in application code — `appendPaymentEvent` inserts and catches
-the unique-constraint violation (Postgres error code `P2002`), turning it into `{
-outcome: "duplicate" }` (`lib/paymentLog.ts:315`). A check-then-insert has a race between
-the read and the write that a database constraint does not: two concurrent calls with
-the same key both reach Postgres, and exactly one commits. Every event type has its own
-key formula (documented in full in `AGENTS.md`'s idempotency table) — `granted:{providerTxId}`
-for `ENTITLEMENT_GRANTED`, `verified:{providerTxId}` for `PAYMENT_VERIFIED`, both keyed
-on the provider's own transaction id specifically *because* collision there is the
-point. Defence question 4 — paying for yearly twice in one minute — is answered by
-`lib/fulfilCheckout.test.ts`'s "two grants for monthly" case and its yearly/anchor
-equivalents: two genuine payments have two different `providerReference` values, both
-pass the idempotency constraint (neither is a duplicate of the other), and the second
-`ENTITLEMENT_GRANTED` extends the period from where the first left off rather than
-overlapping it or silently absorbing the second payment.
+**Why it matters:**
+Both the return page and Flutterwave webhook can trigger fulfilment.
 
-**What I chose against, and why.** A count of prior events of a type as the
-idempotency-key input (e.g. `downgrade:{userId}:{n}`) for the one case — scheduling then
-cancelling a downgrade — where the same event type can legitimately recur within one
-period. Rejected: computing `n` means reading a count *before* inserting, which is a
-check-then-insert race in disguise — two concurrent, genuinely different decisions can
-read the same count before either commits and collide. The chosen alternative anchors
-the key on the `seq` of the specific prior event being superseded instead (e.g.
-`downgrade:{userId}:{periodEnd}:{seq of the DOWNGRADE_CANCELLED it follows}`) — `seq` is
-Postgres-assigned at insert time and immutable once committed, so reading it is reading
-an already-durable fact, not racing a tally.
+Without idempotency, the same payment could potentially grant the subscription twice.
 
-### Webhook signature verification
+It also creates another problem: a retry can hit a temporary provider error and accidentally get recorded as if the original payment failed.
 
-**What it is.** A check that an incoming webhook request genuinely came from
-Flutterwave before any of its contents are acted on.
+That was actually one of the bugs I found while building this.
 
-**Why it is needed.** Without it, anyone who discovers the webhook URL could POST a
-fabricated "payment succeeded" body and potentially grant themselves entitlement for
-nothing.
+**How I implemented it:**
+I use a unique database constraint on `PaymentEvent.idempotencyKey`.
 
-**How I implemented it.** A constant-time equality check
-(`app/api/webhooks/flutterwave/route.ts:23`, `constantTimeEquals`, built on Node's
-`timingSafeEqual`) between the request's `verif-hash` header and the locally-configured
-`FLW_SECRET_HASH`. A wrong or missing header returns 401 and writes nothing. Critically,
-this must be named precisely and not oversold: **this is a shared-secret equality check,
-not a cryptographic signature.** The header value is a constant Flutterwave's v3 API
-sets once in the dashboard and sends back unchanged on every webhook — it is replayable,
-and it carries no tamper-evidence over the request body at all, unlike an HMAC signature
-computed *over* the payload. Because of that, nothing in the webhook body is ever
-treated as fact regardless of whether the header matches: the handler extracts only an
-`id` from the body (`app/api/webhooks/flutterwave/route.ts:67`) and uses it purely as a
-pointer to independently call `GET /v3/transactions/{id}/verify` — the authenticated
-response, not the webhook body, is what amount, currency and status are ever read from.
-A forged or tampered webhook that somehow also knew the correct `verif-hash` value would
-still gain nothing beyond triggering a real, independent re-verification of whatever
-transaction id it named.
+I don't do a simple "check if it exists, then insert" because two requests can both pass that check before either one writes.
 
-**What I chose against, and why.** Flutterwave v4's `flutterwave-signature` header,
-which is an actual HMAC-style signature over the request body. Rejected per `AGENTS.md`'s
-pinned decision: v4's charge flow requires a server-created payment-method object, which
-risks a card number reaching this server and breaking the hard rule that no card data is
-ever stored, logged, or passed through this application. v3 does not have an
-equivalent signature primitive, so this project satisfies the brief's "signature
-verification before any processing" requirement the only way available on the provider
-version its other hard rules require — by making the *action taken* on the webhook
-depend entirely on an independent, authenticated verify call, never on the header or the
-body being trustworthy in themselves.
+Instead, both requests can try the insert and PostgreSQL decides which one wins.
+
+If the unique constraint is hit, `appendPaymentEvent` catches the `P2002` error and returns:
+
+`{ outcome: "duplicate" }`
+
+Each event type has its own idempotency key. For example:
+
+`granted:{providerTxId}`
+
+for `ENTITLEMENT_GRANTED`, and
+
+`verified:{providerTxId}`
+
+for `PAYMENT_VERIFIED`.
+
+The provider transaction ID is important here because two separate genuine payments should not be treated as duplicates.
+
+If a user actually pays twice, those payments have different provider transaction IDs and both can be processed.
+
+**What I decided not to use:**
+A count-based key such as:
+
+`downgrade:{userId}:{n}`
+
+The problem is that calculating `n` requires reading the current count before inserting. Two concurrent requests could read the same count and generate the same key.
+
+Instead, I anchor the key to the specific previous event being superseded. That event already exists and has a permanent `seq`, so there is no race around calculating a count.
+
+---
+
+### Webhook verification
+
+**What it is:**
+Before I act on a Flutterwave webhook, I check that the request contains the expected verification value.
+
+**Why it matters:**
+Without some form of verification, anyone who discovers the webhook endpoint could send a fake "payment successful" request.
+
+But there's an important distinction here: Flutterwave v3's `verif-hash` is a shared-secret check, **not a cryptographic signature over the request body**.
+
+I don't want to describe it as something stronger than it actually is.
+
+**How I implemented it:**
+I compare the `verif-hash` header against my configured `FLW_SECRET_HASH` using a constant-time comparison.
+
+If the header is missing or incorrect, the request gets a `401` and nothing is written.
+
+More importantly, I don't trust the webhook body as proof of payment.
+
+I only take the transaction `id` from the webhook and use it to make a separate verification request to Flutterwave:
+
+`GET /v3/transactions/{id}/verify`
+
+The authenticated response from Flutterwave is what I use to determine the transaction's status, amount and currency.
+
+So even if someone somehow knew the shared hash, they still couldn't simply send a fake successful payment and have me trust the contents of their request.
+
+**What I decided not to use:**
+Flutterwave v4's `flutterwave-signature` flow.
+
+The project was intentionally built around Flutterwave v3 because of the requirement that card details never pass through my server. Moving to the v4 charge flow would change that architecture and potentially expand the application's PCI scope.
+
+---
 
 ### Proration
 
-**What it is.** The prorated amount charged when a user upgrades from monthly to yearly
-mid-cycle: the unused value on the current plan becomes a credit against the new plan's
-price.
+**What it is:**
+When someone upgrades from monthly to yearly in the middle of their billing period, I give them credit for the unused time on their current plan.
 
-**Why it is needed.** Charging the full yearly price on top of a monthly period the user
-already partly paid for would double-charge for days already covered; the brief requires
-this calculated and shown before the user confirms, not silently applied.
+For example, if the monthly plan is ₦2,500 and the yearly plan is ₦25,000, a user upgrading at the start of the month would get the full ₦2,500 as credit:
 
-**How I implemented it.** `lib/proration.ts`'s `prorate` — `creditMinor =
-ceil(paidAmountMinor * daysRemaining / daysInPeriod)`, `chargeMinor = max(0,
-newPlanAmountMinor - creditMinor)`. Rounding is in the customer's favour in exactly one
-direction: the credit rounds up (`Math.ceil`), and the resulting charge is floored at
-zero — it can never go negative, and there is no refund path if the credit would have
-exceeded the new plan's price. `daysInPeriod`/`daysRemaining` (`lib/period.ts`) count
-whole days over the true calendar period, with elapsed time floored (a partial day
-already lived in doesn't count as fully used), so remaining time is never
-under-counted. The quote is written to the log as `PRORATION_QUOTED`
-(`lib/upgradeQuote.ts:101`) at the moment it is shown, carrying the exact numbers, so
-what the user saw is reconstructable from the log alone and not only from a screenshot.
+₦25,000 − ₦2,500 = ₦22,500
 
-The live quote actually captured for this documentation's evidence
-(`13-upgrade-quote-as-shown.png`) is a **day-0** upgrade: the monthly subscription it
-upgrades from was only minutes old at the time, so the entire month is still unused and
-the full monthly payment becomes the credit. As shown to the user, and matching
-`PaymentEvent` seq 5013 on the account that evidence run used:
+**Why it matters:**
+I don't want someone to pay for the same period twice.
 
-> 30 of 30 days remain on the current period
-> Credit for unused time: ₦2,500.00
-> Charge today: ₦22,500.00
+The credit is based on the actual number of days remaining in the current billing period.
 
-(Yearly is ₦25,000.00, monthly is ₦2,500.00 — `2500000` and `250000` minor units,
-matching the seeded `Plan` rows exactly.) This is not the day-12-of-a-cycle case the
-brief's defence question 3 asks to be walked through — it is presented here as what it
-actually is, a day-0 upgrade, not dressed up as something else.
+**How I implemented it:**
+`lib/proration.ts` calculates:
 
-The day-12 arithmetic defence question 3 actually asks for comes from
-`lib/upgrade.test.ts`'s derivation test, with `now` injected rather than waited for:
-a monthly period `[1 Jan, 1 Feb)` — 31 days, since January genuinely has 31 (this
-codebase tracks the calendar, never an assumed 30-day cycle) — evaluated at `now = 13
-Jan` (day 12 elapsed, 19 remaining):
+`creditMinor = ceil(paidAmountMinor × daysRemaining / daysInPeriod)`
 
-> `daysInPeriod = 31`, `daysRemaining = 19`
-> `creditMinor = ceil(250000 * 19 / 31) = 153226` (₦1,532.26)
-> `chargeMinor = 2500000 - 153226 = 2346774` (₦23,467.74)
+Then:
 
-`now` is a parameter to every derivation and proration function in this codebase
-precisely so this exact case — and the day-0 case above, and the period-boundary case
-below — are all testable by injecting a value, rather than needing to wait a month or a
-year for the real clock to reach them.
+`chargeMinor = max(0, newPlanAmountMinor − creditMinor)`
 
-**What I chose against, and why.** Prorating a downgrade symmetrically (a credit for the
-unused value on the more expensive plan). Rejected — the brief specifies downgrades take
-effect at the period boundary, at which point nothing is being cut short and there is
-nothing to credit; adding proration there would be solving a problem the chosen design
-(schedule, don't charge) doesn't have.
+I round the credit up in the customer's favour and make sure the final charge can never go below zero.
 
-### Cancellation and period-end access
+I also calculate days using the actual calendar period rather than assuming every month has 30 days.
 
-**What it is.** A user who cancels keeps access until the period they already paid for
-ends — never an immediate cutoff — with an explicit confirmation step before anything is
-written, and an optional reason prompt after.
+The quote is recorded as `PRORATION_QUOTED` when it's shown to the user, so I can later reconstruct exactly what they were shown.
 
-**Why it is needed — the legal reasoning.** The user has already paid for that period in
-full; cutting access off immediately after taking that payment is, in substance, keeping
-money for a service then not providing it. The brief names this as one of its traps for
-exactly that reason. A confirmation step exists because cancellation is a
-consequential, one-directional action from the user's point of view (there is no
-built "un-cancel" — see Section 7) and must not be triggerable by a single accidental
-click or a GET request.
+The calculation functions also accept `now` as an input, which makes mid-cycle cases easy to test without waiting for the real calendar to reach that date.
 
-**How I implemented it.** `requestCancellation` (`lib/cancellation.ts:86`) writes
-`CANCELLATION_REQUESTED` — an intent, exactly like `DOWNGRADE_SCHEDULED` — and nothing
-else. It never writes `ENTITLEMENT_GRANTED`, never revokes anything: `deriveEntitlement`'s
-`accessGranted` keeps following the existing `periodEnd` precisely as it did before this
-event existed (`lib/entitlement.ts:266`). The confirmation page
-(`app/(app)/cancel/page.tsx`) is a GET that calls `previewCancellation` — the same
-function backing `previewCancellation`'s own preview logic — which writes nothing at all;
-the one write in the whole flow is the explicit `POST` a confirmation button triggers
-(`components/CancelFlow.tsx`). The optional reason prompt shown after is a second,
-separate event type, `CANCELLATION_REASON_PROVIDED` (`lib/cancellation.ts:159`) — its own
-row rather than an edit to the `CANCELLATION_REQUESTED` row, because the log is
-append-only and the brief's reason prompt can arrive after cancellation is already
-recorded. Skipping the prompt means this function is simply never called; no "skipped"
-event exists, and the reason column stays `null`.
+For a 30-day cycle, upgrading on day 12:
 
-**What I chose against, and why.** A free "un-cancel" control that simply reverses the
-flag with no payment involved. Not built — nothing in the brief names it as required,
-and building it would mean a new event type, a new derivation case, and a new endpoint
-for a capability outside scope (see Section 7). A genuine new *payment* on the same plan
-while still within the cancelling grace period does clear `cancelAtPeriodEnd` — this is
-`ENTITLEMENT_GRANTED`'s own unconditional behaviour (`lib/entitlement.ts:142`), applying
-uniformly to every trigger that can produce a grant — but that is reactivation through a
-real transaction, not a free control.
+* 30-day billing period
+* 18 days remaining
+* Monthly price: ₦2,500
+* Credit: ₦1,500.00
+* Yearly price: ₦25,000
+* Amount charged: ₦23,500.00
 
-### Why cards are not stored, naming PCI scope
+And for a real calendar month of 31 days, upgrading on day 12:
 
-**What it is.** No card number, expiry, CVV, PIN or OTP is ever received, stored, logged,
-or passed through this application's own server.
+* 31-day billing period
+* 19 days remaining
+* Credit: ₦1,532.26
+* Amount charged: ₦23,467.74
 
-**Why it is needed.** Beyond the brief's own hard requirement, handling card data
-directly would place this application's own servers inside PCI DSS scope for storing,
-processing or transmitting cardholder data — a substantial compliance burden (network
-segmentation, access logging, regular audits) that a bootcamp assessment slice has no
-business taking on, and that a real product should only take on deliberately.
+I show both because my periods are calendar-accurate rather than a fixed 30 days. A 30-day cycle is one specific case, not the default the arithmetic assumes.
 
-**How I implemented it.** Checkout is the Flutterwave v3 **Standard hosted redirect**
-(`POST /v3/payments`, `lib/flutterwave/payments.ts`) — the browser is sent to a page
-Flutterwave itself serves and controls, enters card details there, and is redirected
-back with only a transaction reference. This server never renders a card field, never
-receives a payment-method object, and the one function that talks to Flutterwave for
-initiation (`initiatePayment`) sends only the amount, currency, `tx_ref` and a redirect
-URL — nothing card-shaped is even a parameter it could accept. Because every cardholder-data
-function is fully outsourced to a redirect to a PCI DSS-validated third party, with none
-of it touching this application's own systems, the applicable self-assessment
-questionnaire under this design is **SAQ A** — the category for merchants with no
-electronic storage, processing, or transmission of cardholder data on their own systems.
+**What I decided not to use:**
+Symmetrical proration for downgrades.
 
-**What I chose against, and why.** Flutterwave v4's charge flow, which requires the
-merchant's own server to create a payment-method object — meaning a card number would
-need to reach this server at least in transit, even if never persisted. Rejected outright
-(`AGENTS.md`'s pinned provider decision) specifically because it would widen PCI scope
-for no benefit this assessment needs, and because the two API versions cannot be mixed.
+Downgrades take effect at the end of the current billing period, so there's no unused paid time being cut short. There's therefore nothing to credit immediately.
 
-### Rate limiting on payment endpoints
+---
 
-**What it is.** A cap on how many times one user can hit a payment-provider-calling
-endpoint in a given window.
+### Cancellation and keeping access until the period ends
 
-**Why it is needed.** `/api/checkout` and `/api/upgrade/confirm` both write a log row
-*and* make a real request to Flutterwave on every call; with no limit, a script (or a
-frustrated double-click loop) could generate an unbounded number of provider calls and
-log rows from one account.
+**What it is:**
+Cancelling a subscription doesn't immediately remove access.
 
-**How I implemented it.** `lib/rate-limit.ts`'s `checkRateLimit`, backed by a
-`RateLimitHit` table pruned of anything outside the current window on each check. Keyed
-per user (`checkout:user:{id}`, `upgrade-confirm:user:{id}`) rather than per IP, since
-both routes require a session — the user *is* the identity that matters here, unlike the
-anonymous auth endpoints reused from Assessment 1. `RATE_LIMITS.checkout` and
-`.upgradeConfirm` both allow 10 attempts per 10 minutes: generous enough for a genuine
-user abandoning checkout and retrying (including a run of real provider failures), tight
-enough to bound the worst case. A rejected request returns 429 with a `Retry-After`
-header (`app/api/checkout/route.ts:44`); only an *allowed* request counts toward the
-limit, so a blocked user retrying while still blocked cannot push the window forward
-indefinitely.
+If you've already paid for the current period, you keep access until that period ends.
 
-**What I chose against, and why.** Rate limiting by IP address for these two routes,
-matching the anonymous auth endpoints' own convention. Rejected: both routes always have
-a session by the time they run, and an IP-based key would let one user rotate networks to
-evade the limit, while also wrongly sharing one limit across unrelated users behind the
-same IP (e.g. a shared office network).
+**Why it matters:**
+If someone pays for a month and cancels halfway through, they've already paid for the remaining days.
+
+Cutting their access immediately would mean taking payment for a service and then stopping that service before the paid period is over.
+
+This is not only a fairness argument. Taking payment for a defined period and then withdrawing the service before that period ends is a failure to deliver what was paid for, and in most consumer-protection regimes that creates a refund obligation rather than leaving the decision to the merchant's discretion. Retaining access to the period end is the cheaper and more honest way to meet that obligation: the customer receives what they bought, and no money has to move backwards.
+
+I also wanted cancellation to require an explicit confirmation rather than being something that can happen accidentally.
+
+**How I implemented it:**
+`requestCancellation` records a `CANCELLATION_REQUESTED` event.
+
+That's it.
+
+It doesn't revoke access or change the entitlement period.
+
+`deriveEntitlement` continues using the existing `periodEnd`, so the user keeps access until the date they've already paid through.
+
+The confirmation page only previews what will happen. It doesn't write anything.
+
+The actual `POST` triggered by the confirmation button is what records the cancellation.
+
+If the user chooses to provide a cancellation reason afterwards, that's recorded as its own `CANCELLATION_REASON_PROVIDED` event.
+
+I don't update the original cancellation event because the log is append-only.
+
+**What I decided not to use:**
+A free "undo cancellation" button.
+
+It wasn't part of the requirements, and adding it would introduce another event type and another state transition.
+
+A new successful payment can still reactivate a subscription during the cancellation period, but that's a real transaction rather than a free "uncancel" action.
+
+---
+
+### Why I don't store card details
+
+**What it is:**
+My application never receives or stores card numbers, expiry dates, CVVs, PINs or OTPs.
+
+**Why it matters:**
+The less card data my application touches, the smaller the security and compliance burden.
+
+I don't want a bootcamp project—or a real product—to take on PCI DSS responsibilities unnecessarily.
+
+**How I implemented it:**
+I use Flutterwave's hosted checkout.
+
+The browser is redirected to Flutterwave, where the customer enters their card details. My server only receives the transaction reference when the customer comes back.
+
+My payment initiation function sends things like:
+
+* amount
+* currency
+* transaction reference
+* redirect URL
+
+It doesn't accept card details at all.
+
+This keeps cardholder data away from my application.
+
+**What I decided not to use:**
+Flutterwave's v4 charge flow for this project, because its architecture would require the server to handle a payment-method object and would widen the PCI scope.
+
+---
+
+### Rate limiting payment endpoints
+
+**What it is:**
+A limit on how many times a user can call payment-related endpoints within a specific period.
+
+**Why it matters:**
+Both `/api/checkout` and `/api/upgrade/confirm` can create a log event **and** make a real request to Flutterwave.
+
+Without rate limiting, a script—or even a user repeatedly clicking a button—could generate a lot of provider requests.
+
+**How I implemented it:**
+`lib/rate-limit.ts` stores rate-limit attempts in a `RateLimitHit` table.
+
+For these authenticated routes, I key the limit by user rather than IP address:
+
+`checkout:user:{id}`
+`upgrade-confirm:user:{id}`
+
+Both currently allow 10 attempts per 10 minutes.
+
+If the limit is exceeded, the API returns `429` with a `Retry-After` header.
+
+Only successful rate-limit checks count toward the limit, so once someone is blocked, repeatedly retrying doesn't keep extending their lockout window.
+
+**What I decided not to use:**
+IP-based rate limiting.
+
+These endpoints already require authentication, so the user is a better identity to rate-limit against.
+
+IP-based limits could also cause unrelated users on the same network to share a limit, while allowing a user to potentially bypass the limit by changing networks.
 
 ## Section 6: What Went Wrong
 

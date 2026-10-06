@@ -4,6 +4,10 @@ A full-stack subscription and billing system built with Next.js, TypeScript, Pos
 
 The project explores the engineering behind subscription products: payment verification, subscription state, upgrades, downgrades, proration, cancellation, entitlements and reliable payment-event handling.
 
+## Preview
+
+![Active subscription billing interface](./evidence/16-billing-view-active.png)
+
 ## What It Does
 
 - Supports Free, monthly and yearly subscription plans
